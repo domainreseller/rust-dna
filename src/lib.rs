@@ -43,7 +43,7 @@ pub mod telemetry;
 pub mod transport;
 mod zone;
 
-pub use client::{DomainNameApi, RegisterOptions, TestModeFlag};
+pub use client::{BoolFlag, BoolFlag as TestModeFlag, DomainNameApi, RegisterOptions};
 pub use serde_json::{json, Value};
 pub use transport::{HttpRequest, HttpResponse, Transport, TransportError, UreqTransport};
 

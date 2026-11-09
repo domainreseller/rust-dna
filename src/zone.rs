@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 
-use crate::client::{local_error, set_error, DomainNameApi};
+use crate::client::{local_error, DomainNameApi};
 use crate::php::{self, get, obj};
 use crate::{FORWARD_TYPES, RESULT_ERROR, RESULT_OK, ZONE_RECORD_TYPES};
 
@@ -186,7 +186,11 @@ impl DomainNameApi {
             return self.error_envelope(&e, "ADD_ZONE");
         }
         if apply {
-            self.apply_resource_records(domain_name);
+            // A failed apply leaves the change staged but not live: report it.
+            let applied = self.apply_resource_records(domain_name);
+            if applied.get("result").and_then(Value::as_str) != Some(RESULT_OK) {
+                return applied;
+            }
         }
         obj([
             ("result", json!(RESULT_OK)),
@@ -194,8 +198,9 @@ impl DomainNameApi {
                 "data",
                 obj([
                     ("Name", json!(name)),
-                    ("Type", json!(kind)),
-                    ("TTL", json!(ttl)),
+                    // Report what was sent: upper-cased type, clamped TTL.
+                    ("Type", body["zoneStruct"]["type"].clone()),
+                    ("TTL", body["zoneStruct"]["ttl"].clone()),
                     ("Content", content.clone()),
                 ]),
             ),
@@ -228,7 +233,11 @@ impl DomainNameApi {
             return self.error_envelope(&e, "EDIT_ZONE");
         }
         if apply {
-            self.apply_resource_records(domain_name);
+            // A failed apply leaves the change staged but not live: report it.
+            let applied = self.apply_resource_records(domain_name);
+            if applied.get("result").and_then(Value::as_str) != Some(RESULT_OK) {
+                return applied;
+            }
         }
         obj([
             ("result", json!(RESULT_OK)),
@@ -236,8 +245,9 @@ impl DomainNameApi {
                 "data",
                 obj([
                     ("Name", json!(name)),
-                    ("Type", json!(kind)),
-                    ("TTL", json!(ttl)),
+                    // Report what was sent: upper-cased type, clamped TTL.
+                    ("Type", body["zoneStruct"]["type"].clone()),
+                    ("TTL", body["zoneStruct"]["ttl"].clone()),
                     ("Content", content.clone()),
                 ]),
             ),
@@ -264,7 +274,11 @@ impl DomainNameApi {
             return self.error_envelope(&e, "DELETE_ZONE");
         }
         if apply {
-            self.apply_resource_records(domain_name);
+            // A failed apply leaves the change staged but not live: report it.
+            let applied = self.apply_resource_records(domain_name);
+            if applied.get("result").and_then(Value::as_str) != Some(RESULT_OK) {
+                return applied;
+            }
         }
         obj([
             ("result", json!(RESULT_OK)),
@@ -330,7 +344,11 @@ impl DomainNameApi {
             return self.error_envelope(&e, "SET_ZONE");
         }
         if apply {
-            self.apply_resource_records(domain_name);
+            // A failed apply leaves the change staged but not live: report it.
+            let applied = self.apply_resource_records(domain_name);
+            if applied.get("result").and_then(Value::as_str) != Some(RESULT_OK) {
+                return applied;
+            }
         }
         obj([
             ("result", json!(RESULT_OK)),
@@ -338,8 +356,8 @@ impl DomainNameApi {
                 "data",
                 obj([
                     ("Name", json!(name)),
-                    ("Type", json!(php::upper(kind))),
-                    ("TTL", json!(ttl)),
+                    ("Type", body["zoneStruct"]["type"].clone()),
+                    ("TTL", body["zoneStruct"]["ttl"].clone()),
                     ("Contents", json!(contents)),
                 ]),
             ),
@@ -583,13 +601,9 @@ impl DomainNameApi {
                 ),
             ]),
             Err(e) => {
-                let raw = get(&self.get_response_data(), "raw_response")
-                    .cloned()
-                    .unwrap_or_else(|| json!(e.message));
-                let raw_str = php::strval(&raw).to_ascii_lowercase();
-                if raw_str.contains("not found")
-                    || e.message.to_ascii_lowercase().contains("not found")
-                {
+                // Only the gateway's "no forwarding configured" answer means
+                // disabled; any other "not found" (a missing domain) is an error.
+                if self.is_forward_not_set(&e.message) {
                     return obj([
                         ("result", json!(RESULT_OK)),
                         (
@@ -598,18 +612,31 @@ impl DomainNameApi {
                         ),
                     ]);
                 }
+                let raw = get(&self.get_response_data(), "raw_response")
+                    .cloned()
+                    .unwrap_or_else(|| json!(e.message));
                 let details = get(&self.last_parsed_response, "Details")
                     .cloned()
                     .unwrap_or(raw);
+                let code = self.format_error_code(e.code);
                 obj([
                     ("result", json!(RESULT_ERROR)),
-                    (
-                        "error",
-                        set_error(json!(format!("API_{}", e.code)), json!(e.message), details),
-                    ),
+                    ("error", self.api_error(&code, json!(e.message), details)),
                 ])
             }
         }
+    }
+
+    /// The gateway answers "Redirect information not found" when a domain
+    /// has no forwarding configured.
+    fn is_forward_not_set(&self, message: &str) -> bool {
+        let needle = "redirect information not found";
+        let response = self.get_response_data();
+        message.to_ascii_lowercase().contains(needle)
+            || php::strval_or(get(&response, "raw_response"), "")
+                .to_ascii_lowercase()
+                .contains(needle)
+            || response.to_string().to_ascii_lowercase().contains(needle)
     }
 
     /// Point the domain at a URL. `forward_type` is `Standard` (redirect) or
@@ -651,7 +678,8 @@ impl DomainNameApi {
         }
     }
 
-    /// Remove URL forwarding.
+    /// Remove URL forwarding. `Removed` tells whether anything was removed;
+    /// removing forwarding that is not set is a success with `Removed: false`.
     pub fn delete_forwarding(&mut self, domain_name: &str) -> Value {
         match self.request(
             "DELETE",
@@ -660,7 +688,12 @@ impl DomainNameApi {
         ) {
             Ok(_) => obj([
                 ("result", json!(RESULT_OK)),
-                ("data", json!({"DomainName": domain_name})),
+                ("data", json!({"DomainName": domain_name, "Removed": true})),
+            ]),
+            // Nothing configured: deleting is a no-op success.
+            Err(e) if self.is_forward_not_set(&e.message) => obj([
+                ("result", json!(RESULT_OK)),
+                ("data", json!({"DomainName": domain_name, "Removed": false})),
             ]),
             Err(e) => self.error_envelope(&e, "DELETE_FORWARD"),
         }

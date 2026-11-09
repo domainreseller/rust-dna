@@ -7,12 +7,11 @@ use serde_json::{json, Map, Value};
 use crate::php::{self, get, get_path, obj};
 
 /// Default values `validate_contact` fills in.
-const DEFAULTS: [(&str, &str); 9] = [
+const DEFAULTS: [(&str, &str); 8] = [
     ("FirstName", "Isimyok"),
     ("LastName", "Isimyok"),
     ("AddressLine1", "Addres yok"),
     ("City", "ISTANBUL"),
-    ("State", "ISTANBUL"),
     ("Country", "TR"),
     ("ZipCode", "34000"),
     ("Phone", "5555555555"),
@@ -38,6 +37,10 @@ pub(crate) fn validate_contact(input: &Value) -> Value {
         if c.get(key).map(Value::is_null).unwrap_or(true) {
             c.insert(key.to_string(), json!(value));
         }
+    }
+    // No State default: a missing state falls back to the city below.
+    if c.get("State").map(Value::is_null).unwrap_or(true) {
+        c.insert("State".into(), json!(""));
     }
 
     let first = sanitize_person_name(&php::strval(&c["FirstName"]));
@@ -174,6 +177,14 @@ pub(crate) fn normalize_phone(number: &str, country_code: &str) -> (String, Stri
         }
         if !cc.is_empty() && digits.starts_with(&cc) && digits.len() > cc.len() {
             digits = digits[cc.len()..].to_string();
+        } else {
+            // The number carries its own country code ("+1 202...") and it
+            // differs from the given one (often a default 90): the number wins.
+            let own = calling_code_prefix(&digits);
+            if !own.is_empty() && digits.len() > own.len() {
+                digits = digits[own.len()..].to_string();
+                cc = own;
+            }
         }
     } else if !cc.is_empty() && digits.starts_with(&cc) && digits.len() > 10 {
         digits = digits[cc.len()..].to_string();
@@ -188,6 +199,31 @@ pub(crate) fn normalize_phone(number: &str, country_code: &str) -> (String, Stri
         digits = digits.trim_start_matches('0').to_string();
     }
     (digits, cc)
+}
+
+/// Country calling code at the start of an international number (digits
+/// only). E.164 codes are prefix-free: zones 1 and 7 use one digit, the
+/// listed two-digit codes use two, everything else uses three.
+pub(crate) fn calling_code_prefix(digits: &str) -> String {
+    const TWO_DIGIT: [&str; 44] = [
+        "20", "27", "30", "31", "32", "33", "34", "36", "39", "40", "41", "43", "44", "45", "46",
+        "47", "48", "49", "51", "52", "53", "54", "55", "56", "57", "58", "60", "61", "62", "63",
+        "64", "65", "66", "81", "82", "84", "86", "90", "91", "92", "93", "94", "95", "98",
+    ];
+    if digits.is_empty() || digits.starts_with('0') {
+        return String::new();
+    }
+    if digits.starts_with('1') || digits.starts_with('7') {
+        return digits[..1].to_string();
+    }
+    if digits.len() >= 2 && TWO_DIGIT.contains(&&digits[..2]) {
+        return digits[..2].to_string();
+    }
+    if digits.len() >= 3 {
+        digits[..3].to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// php-dna `parseContact()`: module contact (flat or nested) → gateway
@@ -418,8 +454,14 @@ mod tests {
         assert_eq!(normalize_phone("", "1"), ("".into(), "1".into()));
         assert_eq!(
             normalize_phone("+1 (202) 555-0100", "90"),
-            ("12025550100".into(), "90".into())
+            ("2025550100".into(), "1".into())
         );
+        assert_eq!(
+            normalize_phone("+44 20 7123 4567", "90"),
+            ("2071234567".into(), "44".into())
+        );
+        assert_eq!(calling_code_prefix("358401234567"), "358");
+        assert_eq!(calling_code_prefix("0"), "");
         assert_eq!(
             normalize_phone("0090 212 123 45 67", ""),
             ("2121234567".into(), "90".into())

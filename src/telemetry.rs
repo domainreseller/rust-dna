@@ -27,7 +27,7 @@ pub const PERFORMANCE_SAMPLE_RATE: u64 = 40;
 pub const SLOW_CALL_MS: f64 = 1000.0;
 
 /// Error messages that are expected noise and never reported.
-pub const DEFAULT_IGNORED_ERRORS: [&str; 10] = [
+pub const DEFAULT_IGNORED_ERRORS: [&str; 11] = [
     "Domain not found",
     "ERR_DOMAIN_NOT_FOUND",
     "Reseller not found",
@@ -38,6 +38,7 @@ pub const DEFAULT_IGNORED_ERRORS: [&str; 10] = [
     "Invalid API credentials",
     "could not be found",
     "Insufficent reseller balance",
+    "Redirect information not found",
 ];
 
 /// Seconds an external IP lookup is cached (php-dna `DEFAULT_CACHE_TTL`).
@@ -890,6 +891,7 @@ mod tests {
             "The domain name you requested could not be found."
         ));
         assert!(is_ignored("Invalid API credentials"));
+        assert!(is_ignored("Redirect information not found"));
         assert!(!is_ignored("HTTP 500 - Internal Server Error"));
     }
 

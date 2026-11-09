@@ -125,8 +125,7 @@ fn timeout_is_an_error_not_an_empty_success() {
             .starts_with("Could not reach the DomainNameAPI service: the connection timed out. ("),
         "{message}"
     );
-    // php-dna formats the envelope code from the exception code (curl errno).
-    assert_eq!(out["error"]["Code"], "API_28");
+    assert_eq!(out["error"]["Code"], "CURL_28");
     assert_eq!(dna.get_parsed_response_data()["Code"], "CURL_28");
     assert_eq!(out["error"]["Details"], json!(message));
 }
@@ -143,7 +142,7 @@ fn other_transport_failures_use_curl_message() {
         out["error"]["Message"],
         "Curl error during request: Could not resolve host: nowhere.invalid"
     );
-    assert_eq!(out["error"]["Code"], "API_6");
+    assert_eq!(out["error"]["Code"], "CURL_6");
     assert_eq!(dna.get_parsed_response_data()["Code"], "CURL_6");
 }
 
@@ -255,15 +254,76 @@ fn local_validation_makes_no_request() {
 }
 
 #[test]
-fn transfer_with_contacts_sends_them() {
-    let ok = json!({"status": "Active", "expirationDate": "2030-01-01T00:00:00"}).to_string();
+fn transfer_never_sends_contacts() {
+    let ok = json!({"success": true, "status": "Active", "expirationDate": "2030-01-01T00:00:00"})
+        .to_string();
     let (mut dna, t) = client(vec![Reply::Http(200, ok)]);
-    let contact = json!({"FirstName": "Ada", "LastName": "Lovelace", "EMail": "ada@example.com", "Phone": "5551234567", "PhoneCountryCode": "90"});
-    let out = dna.transfer_with_contacts("example.com", "Ab1", 1, &json!({"Registrant": contact}));
+    let out = dna.transfer("example.com", "Ab1", 1);
     assert_eq!(out["result"], "OK");
     let body: Value = serde_json::from_str(t.requests()[0].body.as_deref().unwrap()).unwrap();
-    assert_eq!(body["contacts"][0]["contactType"], "Registrant");
-    assert_eq!(body["contacts"][0]["firstName"], "Ada");
+    assert_eq!(
+        body,
+        json!({"domainName": "example.com", "authCode": "Ab1", "period": 1, "contacts": []})
+    );
+}
+
+#[test]
+fn refusals_and_gateway_codes() {
+    // HTTP 200 with success:false is a refusal, not a success.
+    let refused = json!({"success": false, "message": "Domain is not available"}).to_string();
+    let (mut dna, _t) = client(vec![
+        Reply::Http(200, refused.clone()),
+        Reply::Http(200, refused),
+    ]);
+    let out = dna.renew("example.com", 1);
+    assert_eq!(
+        out["error"],
+        json!({"Code": "RENEW_DOMAIN", "Message": "Domain is not available", "Details": "Domain is not available"})
+    );
+    let out = dna.transfer("example.com", "x", 1);
+    assert_eq!(out["error"]["Code"], "TRANSFER_DOMAIN");
+
+    // The gateway's own code travels next to API_<status>.
+    let body =
+        json!({"error": {"code": "Dna.DomainService:Domain:10007", "message": "Domain not found"}})
+            .to_string();
+    let (mut dna, _t) = client(vec![
+        Reply::Http(404, body),
+        Reply::Http(500, String::new()),
+    ]);
+    let out = dna.get_details("missing.com");
+    assert_eq!(out["error"]["Code"], "API_404");
+    assert_eq!(
+        out["error"]["GatewayCode"],
+        "Dna.DomainService:Domain:10007"
+    );
+    // ...and is not carried over to the next failure.
+    let out = dna.get_details("example.com");
+    assert!(out["error"].get("GatewayCode").is_none(), "{out}");
+
+    // Privacy flags from panels.
+    let (mut dna, t) = client(vec![Reply::Http(200, String::new()); 3]);
+    assert_eq!(
+        dna.modify_privacy_protection_status("example.com", "on", "x")["data"]
+            ["PrivacyProtectionStatus"],
+        true
+    );
+    assert_eq!(
+        dna.modify_privacy_protection_status("example.com", 0, "x")["data"]
+            ["PrivacyProtectionStatus"],
+        false
+    );
+    assert_eq!(
+        dna.modify_privacy_protection_status("example.com", true, "x")["data"]
+            ["PrivacyProtectionStatus"],
+        true
+    );
+    let body: Value = serde_json::from_str(t.requests()[0].body.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        body,
+        json!({"domainName": "example.com", "privacyStatus": true}),
+        "reason is not sent"
+    );
 }
 
 #[test]

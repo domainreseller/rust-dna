@@ -88,11 +88,18 @@ fn dispatch(dna: &mut DomainNameApi, call: &str, args: &[Value]) -> Value {
         "addChildNameServer" => dna.add_child_name_server(&a.s(0), &a.s(1), &a.s(2)),
         "deleteChildNameServer" => dna.delete_child_name_server(&a.s(0), &a.s(1)),
         "modifyChildNameServer" => dna.modify_child_name_server(&a.s(0), &a.s(1), &a.s(2)),
-        "modifyPrivacyProtectionStatus" => dna.modify_privacy_protection_status(
-            &a.s(0),
-            a.val(1) == json!(true),
-            &a.s_or(2, "Owner request"),
-        ),
+        "modifyPrivacyProtectionStatus" => {
+            let reason = a.s_or(2, "Owner request");
+            match a.val(1) {
+                Value::Bool(b) => dna.modify_privacy_protection_status(&a.s(0), b, &reason),
+                Value::String(s) => {
+                    dna.modify_privacy_protection_status(&a.s(0), s.as_str(), &reason)
+                }
+                other => {
+                    dna.modify_privacy_protection_status(&a.s(0), php::intval(&other), &reason)
+                }
+            }
+        }
         "renew" => dna.renew(&a.s(0), a.int(1)),
         "registerWithContactInfo" => {
             if a.has(3) {
@@ -114,8 +121,7 @@ fn dispatch(dna: &mut DomainNameApi, call: &str, args: &[Value]) -> Value {
                 )
             }
         }
-        // The php-dna facade's transfer() takes three arguments; a fourth
-        // (contacts) is dropped there, so it is dropped here too.
+        // transfer never sends contacts; a fourth fixture argument is ignored.
         "transfer" => dna.transfer(&a.s(0), &a.s(1), a.int(2)),
         "cancelTransfer" => dna.cancel_transfer(&a.s(0)),
         "approveTransfer" => dna.approve_transfer(&a.s(0)),
@@ -320,7 +326,7 @@ fn all_php_dna_fixtures_pass() {
         .filter(|p| p.extension().map(|e| e == "json").unwrap_or(false))
         .collect();
     files.sort();
-    assert_eq!(files.len(), 126, "expected the 126 php-dna fixtures");
+    assert_eq!(files.len(), 134, "expected the 134 php-dna fixtures");
 
     let mut failures = Vec::new();
     let mut methods = Map::new();

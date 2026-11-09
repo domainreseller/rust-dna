@@ -9,8 +9,8 @@ use crate::php::{self, get, get_path, obj};
 use crate::telemetry::{CallContext, Telemetry};
 use crate::transport::{HttpRequest, Transport, UreqTransport};
 use crate::{
-    DEFAULT_CONNECT_TIMEOUT, DEFAULT_ERRORS, DEFAULT_NAMESERVERS, DEFAULT_REASON, DEFAULT_TIMEOUT,
-    RESULT_ERROR, RESULT_OK, URL_OTE, URL_PROD, USER_AGENT, ZONE_MIN_INTERVAL,
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_ERRORS, DEFAULT_NAMESERVERS, DEFAULT_TIMEOUT, RESULT_ERROR,
+    RESULT_OK, URL_OTE, URL_PROD, USER_AGENT, ZONE_MIN_INTERVAL,
 };
 
 /// A failed gateway call: the HTTP status (or curl error number) and message.
@@ -22,25 +22,27 @@ pub(crate) struct ApiError {
 
 type ApiResult = Result<Value, ApiError>;
 
-/// Values accepted for the constructor's `test_mode` argument.
+/// Boolean flags accepted from panels: the constructor's `test_mode` and
+/// `modify_privacy_protection_status`'s `status`.
 ///
-/// Panels store checkbox settings as strings, so besides `bool` the
-/// constructor accepts strings: `"true"`, `"1"`, `"on"` and `"yes"`
-/// (case-insensitive, trimmed) mean test mode, anything else means live
-/// (php-dna `FILTER_VALIDATE_BOOLEAN`, BUG-10284).
-pub trait TestModeFlag {
+/// Panels store checkbox settings as strings or numbers, so besides `bool`
+/// these arguments accept strings: `"true"`, `"1"`, `"on"` and `"yes"`
+/// (case-insensitive, trimmed) mean `true`, anything else means `false`; and
+/// integers: `1` is `true`, anything else `false` (php-dna
+/// `FILTER_VALIDATE_BOOLEAN`, BUG-10284).
+pub trait BoolFlag {
     /// Resolve to a boolean.
-    fn into_test_mode(self) -> bool;
+    fn into_flag(self) -> bool;
 }
 
-impl TestModeFlag for bool {
-    fn into_test_mode(self) -> bool {
+impl BoolFlag for bool {
+    fn into_flag(self) -> bool {
         self
     }
 }
 
-impl TestModeFlag for &str {
-    fn into_test_mode(self) -> bool {
+impl BoolFlag for &str {
+    fn into_flag(self) -> bool {
         matches!(
             php::trim(self).to_ascii_lowercase().as_str(),
             "1" | "true" | "on" | "yes"
@@ -48,15 +50,27 @@ impl TestModeFlag for &str {
     }
 }
 
-impl TestModeFlag for String {
-    fn into_test_mode(self) -> bool {
-        self.as_str().into_test_mode()
+impl BoolFlag for String {
+    fn into_flag(self) -> bool {
+        self.as_str().into_flag()
     }
 }
 
-impl TestModeFlag for &String {
-    fn into_test_mode(self) -> bool {
-        self.as_str().into_test_mode()
+impl BoolFlag for &String {
+    fn into_flag(self) -> bool {
+        self.as_str().into_flag()
+    }
+}
+
+impl BoolFlag for i64 {
+    fn into_flag(self) -> bool {
+        self == 1
+    }
+}
+
+impl BoolFlag for i32 {
+    fn into_flag(self) -> bool {
+        self == 1
     }
 }
 
@@ -102,6 +116,8 @@ pub struct DomainNameApi {
     last_response_headers: Value,
     pub(crate) last_parsed_response: Value,
     last_function: String,
+    transport_failed: bool,
+    last_gateway_code: String,
     start_at: f64,
     last_zone_request_at: Option<Instant>,
     zone_min_interval: Duration,
@@ -203,11 +219,6 @@ pub(crate) fn local_error(code: &str, why: &str) -> Value {
         ("result", json!(RESULT_ERROR)),
         ("error", set_error_str(code, why, why)),
     ])
-}
-
-/// `formatErrorCode()`: HTTP / curl codes become `API_<n>`.
-fn format_error_code(code: i64) -> String {
-    format!("API_{code}")
 }
 
 /// Flatten the gateway's `validationErrors` into one readable string.
@@ -385,9 +396,9 @@ impl DomainNameApi {
     /// `reseller_id` is the Reseller ID (UUID) and `api_key` the API Key from
     /// the panel's API Settings (panel login credentials do not work). Both
     /// are trimmed. `test_mode` selects the OTE environment; it accepts a
-    /// `bool` or a string (see [`TestModeFlag`]).
-    pub fn new(reseller_id: &str, api_key: &str, test_mode: impl TestModeFlag) -> Self {
-        let test_mode = test_mode.into_test_mode();
+    /// `bool` or a string (see [`BoolFlag`]).
+    pub fn new(reseller_id: &str, api_key: &str, test_mode: impl BoolFlag) -> Self {
+        let test_mode = test_mode.into_flag();
         Self {
             reseller_id: php::trim(reseller_id).to_string(),
             api_key: php::trim(api_key).to_string(),
@@ -400,6 +411,8 @@ impl DomainNameApi {
             last_response_headers: json!([]),
             last_parsed_response: json!([]),
             last_function: String::new(),
+            transport_failed: false,
+            last_gateway_code: String::new(),
             start_at: php::microtime(),
             last_zone_request_at: None,
             zone_min_interval: Duration::from_secs_f64(ZONE_MIN_INTERVAL),
@@ -531,6 +544,8 @@ impl DomainNameApi {
     /// php-dna `DNARest::request()`.
     pub(crate) fn request(&mut self, method: &str, endpoint: &str, data: &Value) -> ApiResult {
         self.pace_zone_request(endpoint);
+        self.transport_failed = false;
+        self.last_gateway_code.clear();
         self.start_at = php::microtime();
         let operation_endpoint = endpoint.split('?').next().unwrap_or("");
         self.last_function = format!("request:{method} {operation_endpoint}");
@@ -574,6 +589,7 @@ impl DomainNameApi {
 
         let response = match result {
             Err(err) => {
+                self.transport_failed = true;
                 self.last_response_headers = obj([
                     ("url", json!(url)),
                     ("http_code", json!(0)),
@@ -655,10 +671,15 @@ impl DomainNameApi {
             .or_else(|| get_path(&parsed, &["error", "code"]))
             .cloned()
             .unwrap_or_else(|| json!(format!("HTTP_{status}")));
-        let mut error_details = get(&parsed, "details")
+        let api_details = get(&parsed, "details")
             .or_else(|| get_path(&parsed, &["error", "details"]))
-            .cloned()
-            .unwrap_or_else(|| body_value.clone());
+            .cloned();
+        let mut error_details = api_details.clone().unwrap_or_else(|| body_value.clone());
+        if let Value::String(code) = &error_code {
+            if !code.is_empty() && !code.starts_with("HTTP_") && code != "CREDENTIALS" {
+                self.last_gateway_code = code.clone();
+            }
+        }
 
         let mut error_message = php::strval(&error_message_value);
         if php::trim(&error_message).is_empty() {
@@ -670,7 +691,9 @@ impl DomainNameApi {
 
         let code_str = php::strval(&error_code);
         if is_abp_boilerplate(&error_message) || error_message == code_str {
-            let details_str = php::strval(&error_details);
+            // Only the gateway's details field may replace the message; the raw
+            // response body is never user-facing text.
+            let details_str = php::strval(api_details.as_ref().unwrap_or(&Value::Null));
             let details_clean = php::trim(strip_dna_prefix(&details_str)).to_string();
             if !details_clean.is_empty()
                 && details_clean != error_message
@@ -704,9 +727,34 @@ impl DomainNameApi {
         })
     }
 
+    /// php-dna `formatErrorCode()`: `API_<status>`, or `CURL_<errno>` after a
+    /// transport failure.
+    pub(crate) fn format_error_code(&self, code: i64) -> String {
+        if self.transport_failed {
+            format!("CURL_{code}")
+        } else {
+            format!("API_{code}")
+        }
+    }
+
+    /// `setError()` for envelopes built from a failed request: an
+    /// `API_<status>` code also carries the gateway's own code as
+    /// `GatewayCode` when the gateway sent one.
+    pub(crate) fn api_error(&self, code: &str, message: Value, details: Value) -> Value {
+        let mut error = set_error(json!(code), message, details);
+        let is_api = code
+            .strip_prefix("API_")
+            .map(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .unwrap_or(false);
+        if is_api && !self.last_gateway_code.is_empty() {
+            error["GatewayCode"] = json!(self.last_gateway_code);
+        }
+        error
+    }
+
     /// The `catch (Exception $e)` block shared by every public method.
     pub(crate) fn error_envelope(&self, e: &ApiError, fallback: &str) -> Value {
-        let mut code = format_error_code(e.code);
+        let mut code = self.format_error_code(e.code);
         if code.is_empty() {
             code = fallback.to_string();
         }
@@ -716,8 +764,24 @@ impl DomainNameApi {
             .unwrap_or_else(|| json!(e.message));
         obj([
             ("result", json!(RESULT_ERROR)),
-            ("error", set_error(json!(code), json!(e.message), details)),
+            ("error", self.api_error(&code, json!(e.message), details)),
         ])
+    }
+
+    /// php-dna `operationFailure()`: register, transfer and renew can answer
+    /// HTTP 200 with `{"success": false, "message": ...}`, which is a refusal.
+    fn operation_failure(response: &Value, code: &str) -> Option<Value> {
+        if response.get("success") != Some(&Value::Bool(false)) {
+            return None;
+        }
+        let mut message = php::trim(&php::strval_or(get(response, "message"), "")).to_string();
+        if message.is_empty() {
+            message = "The registry did not accept the request.".to_string();
+        }
+        Some(obj([
+            ("result", json!(RESULT_ERROR)),
+            ("error", set_error_str(code, &message, &message)),
+        ]))
     }
 
     // ------------------------------------------------------------------
@@ -729,8 +793,14 @@ impl DomainNameApi {
         match self.request("GET", "deposit/accounts/me", &json!([])) {
             Ok(response) => {
                 if get(&response, "resellerId").is_some() {
-                    let usd = php::strval(get(&response, "usdBalance").unwrap_or(&json!(0)));
-                    let tl = php::strval(get(&response, "tryBalance").unwrap_or(&json!(0)));
+                    let usd = php::number_format(
+                        php::floatval(get(&response, "usdBalance").unwrap_or(&json!(0))),
+                        2,
+                    );
+                    let tl = php::number_format(
+                        php::floatval(get(&response, "tryBalance").unwrap_or(&json!(0))),
+                        2,
+                    );
                     obj([
                         ("result", json!(RESULT_OK)),
                         ("id", response["resellerId"].clone()),
@@ -768,9 +838,10 @@ impl DomainNameApi {
         }
     }
 
-    /// Balance in one currency (`USD`, `TRY`, `EUR`, `GBP`; php-dna default
-    /// `USD`, see [`crate::DEFAULT_CURRENCY`]). Returns the
-    /// `OperationResult` envelope, not `result`/`data`.
+    /// Balance in one currency (php-dna default `USD`, see
+    /// [`crate::DEFAULT_CURRENCY`]). The account reports `USD` and `TRY`
+    /// (`TL`); any other currency fails with `ErrorCode` `BALANCE`. Returns
+    /// the `OperationResult` envelope, not `result`/`data`.
     pub fn get_current_balance(&mut self, currency: &str) -> Value {
         let name = php::upper(currency);
         let (id, label, symbol) = match name.as_str() {
@@ -783,6 +854,28 @@ impl DomainNameApi {
         match self.request("GET", "deposit/accounts/me", &json!({"currency": name})) {
             Ok(response) => {
                 let key = format!("{}Balance", php::lower(currency));
+                let reported = response
+                    .as_object()
+                    .map(|m| m.contains_key(&key))
+                    .unwrap_or(false);
+                if !reported {
+                    // The account only reports USD and TRY balances.
+                    return obj([
+                        ("ErrorCode", json!("BALANCE")),
+                        (
+                            "OperationMessage",
+                            json!(format!(
+                                "No {name} balance is reported for this account. Available: USD, TRY."
+                            )),
+                        ),
+                        ("OperationResult", json!("FAILED")),
+                        ("Balance", json!("0.00")),
+                        ("CurrencyId", json!(id)),
+                        ("CurrencyInfo", Value::Null),
+                        ("CurrencyName", json!(label)),
+                        ("CurrencySymbol", json!(symbol)),
+                    ]);
+                }
                 let balance = php::floatval(get(&response, &key).unwrap_or(&json!(0)));
                 obj([
                     ("ErrorCode", json!(0)),
@@ -796,7 +889,7 @@ impl DomainNameApi {
                 ])
             }
             Err(e) => {
-                let code = format_error_code(e.code);
+                let code = self.format_error_code(e.code);
                 obj([
                     (
                         "ErrorCode",
@@ -879,7 +972,14 @@ impl DomainNameApi {
                 }
             };
             let raw = php::strval_or(get(item, "domainName"), "");
-            let domain_name = php::lower(&raw).replace(&format!(".{tld}"), "");
+            // Strip only the trailing ".tld" ("my.company.com" -> "my.company").
+            let lower = php::lower(&raw);
+            let suffix = format!(".{tld}");
+            let domain_name = if !tld.is_empty() && lower.ends_with(&suffix) {
+                lower[..lower.len() - suffix.len()].to_string()
+            } else {
+                lower
+            };
             let status = php::lower(&php::strval_or(get(item, "status"), ""));
             let available = matches!(status.as_str(), "available" | "1" | "true");
             out.push(obj([
@@ -1036,9 +1136,11 @@ impl DomainNameApi {
                     "data",
                     obj([(
                         "NameServers",
+                        // The gateway rarely echoes the list; report the
+                        // normalised list that was sent.
                         get(&r, "nameServers")
                             .cloned()
-                            .unwrap_or_else(|| name_servers.clone()),
+                            .unwrap_or_else(|| payload["nameServers"].clone()),
                     )]),
                 ),
             ]),
@@ -1072,19 +1174,19 @@ impl DomainNameApi {
         }
     }
 
-    /// Turn privacy protection on or off. `reason` is accepted for parity
-    /// with php-dna (default [`crate::DEFAULT_REASON`]) and not sent.
+    /// Turn privacy protection on or off. `status` is a `bool` or a panel
+    /// value (`"1"`, `"on"`, `"true"`, `"yes"`, `1` mean on; see
+    /// [`BoolFlag`]). `reason` (php-dna default [`crate::DEFAULT_REASON`]) is
+    /// kept for signature parity only: the gateway has no reason field, so
+    /// it is not sent.
     pub fn modify_privacy_protection_status(
         &mut self,
         domain_name: &str,
-        status: bool,
+        status: impl BoolFlag,
         reason: &str,
     ) -> Value {
-        let _reason = if reason.is_empty() || reason == "0" {
-            DEFAULT_REASON
-        } else {
-            reason
-        };
+        let _ = reason;
+        let status = status.into_flag();
         let payload = json!({"domainName": domain_name, "privacyStatus": status});
         match self.request("POST", "domains/privacy", &payload) {
             Ok(_) => obj([
@@ -1100,6 +1202,9 @@ impl DomainNameApi {
         let payload = json!({"domainName": domain_name, "period": period});
         match self.request("POST", "domains/renew", &payload) {
             Ok(r) => {
+                if let Some(failed) = Self::operation_failure(&r, "RENEW_DOMAIN") {
+                    return failed;
+                }
                 if php::truthy(get(&r, "expirationDate").unwrap_or(&json!(false))) {
                     obj([
                         ("result", json!(RESULT_OK)),
@@ -1164,7 +1269,8 @@ impl DomainNameApi {
             ("tldAttributes", Value::Object(attrs)),
         ]);
         match self.request("POST", "domains/register-with-contacts", &payload) {
-            Ok(r) => parse_domain_info(&r),
+            Ok(r) => Self::operation_failure(&r, "REGISTER_DOMAIN")
+                .unwrap_or_else(|| parse_domain_info(&r)),
             Err(e) => self.error_envelope(&e, "REGISTER_DOMAIN"),
         }
     }
@@ -1272,7 +1378,9 @@ impl DomainNameApi {
     // Contacts
     // ------------------------------------------------------------------
 
-    /// The domain's four contacts.
+    /// The domain's contacts: `Administrative`, `Billing`, `Registrant`,
+    /// `Technical` (types matched case-insensitively), then any other type
+    /// the registry returned.
     pub fn get_contacts(&mut self, domain_name: &str) -> Value {
         let info = match self.request("GET", "domains/info", &json!({"DomainName": domain_name})) {
             Ok(r) => r,
@@ -1281,14 +1389,20 @@ impl DomainNameApi {
         let mut contacts = Map::new();
         if let Some(list @ (Value::Array(_) | Value::Object(_))) = get(&info, "contacts") {
             for item in php::values(list) {
-                let api_type = php::strval_or(get(item, "contactType"), "");
+                if !php::is_array(item) {
+                    continue;
+                }
+                let api_type = php::lower(php::trim(&php::strval_or(get(item, "contactType"), "")));
                 let key = match api_type.as_str() {
-                    "Admin" => "Administrative".to_string(),
-                    "Billing" => "Billing".to_string(),
-                    "Tech" => "Technical".to_string(),
-                    "Registrant" => "Registrant".to_string(),
-                    other => php::ucfirst(&php::lower(other)),
+                    "admin" | "administrative" => "Administrative".to_string(),
+                    "billing" => "Billing".to_string(),
+                    "tech" | "technical" => "Technical".to_string(),
+                    "registrant" | "owner" => "Registrant".to_string(),
+                    other => php::ucfirst(other),
                 };
+                if key.is_empty() {
+                    continue;
+                }
                 let mut merged = match item {
                     Value::Object(m) => m.clone(),
                     _ => Map::new(),
@@ -1302,9 +1416,12 @@ impl DomainNameApi {
         }
         let mut ordered = Map::new();
         for key in ["Administrative", "Billing", "Registrant", "Technical"] {
-            if let Some(c) = contacts.get(key) {
-                ordered.insert(key.to_string(), c.clone());
+            if let Some(c) = contacts.shift_remove(key) {
+                ordered.insert(key.to_string(), c);
             }
+        }
+        for (key, c) in contacts {
+            ordered.insert(key, c);
         }
         obj([
             ("data", obj([("contacts", php::assoc_or_empty(ordered))])),
@@ -1345,41 +1462,20 @@ impl DomainNameApi {
     // Transfers
     // ------------------------------------------------------------------
 
-    /// Start an incoming transfer.
+    /// Start an incoming transfer with the EPP (auth) code.
     ///
-    /// Like php-dna's facade (`DomainNameAPI_PHPLibrary::transfer`), this
-    /// sends no contacts. Use
-    /// [`transfer_with_contacts`](Self::transfer_with_contacts) to send them.
+    /// No contacts are ever sent: the registrar takes them over from the
+    /// losing registrar, so the request always carries `contacts: []`.
     pub fn transfer(&mut self, domain_name: &str, epp_code: &str, period: i64) -> Value {
-        self.transfer_with_contacts(domain_name, epp_code, period, &json!([]))
-    }
-
-    /// Start an incoming transfer with contacts (php-dna `DNARest::transfer`
-    /// with its fourth argument).
-    pub fn transfer_with_contacts(
-        &mut self,
-        domain_name: &str,
-        epp_code: &str,
-        period: i64,
-        contacts: &Value,
-    ) -> Value {
-        let mut payload_contacts = Vec::new();
-        if php::truthy(contacts) {
-            for (kind, details) in php::entries(contacts) {
-                payload_contacts.push(crate::contacts::parse_contact(
-                    details,
-                    &php::ucfirst(&php::lower(&kind)),
-                ));
-            }
-        }
         let payload = json!({
             "domainName": domain_name,
             "authCode": epp_code,
             "period": period,
-            "contacts": payload_contacts,
+            "contacts": [],
         });
         match self.request("POST", "domains/transfer", &payload) {
-            Ok(r) => parse_domain_info(&r),
+            Ok(r) => Self::operation_failure(&r, "TRANSFER_DOMAIN")
+                .unwrap_or_else(|| parse_domain_info(&r)),
             Err(e) => self.error_envelope(&e, "TRANSFER_DOMAIN"),
         }
     }
@@ -1909,12 +2005,12 @@ mod tests {
 
     #[test]
     fn test_mode_strings() {
-        assert!(" Yes ".into_test_mode());
-        assert!("ON".into_test_mode());
-        assert!("1".into_test_mode());
-        assert!(!"false".into_test_mode());
-        assert!(!"off".into_test_mode());
-        assert!(!"".into_test_mode());
-        assert!(!"2".into_test_mode());
+        assert!(" Yes ".into_flag());
+        assert!("ON".into_flag());
+        assert!("1".into_flag());
+        assert!(!"false".into_flag());
+        assert!(!"off".into_flag());
+        assert!(!"".into_flag());
+        assert!(!"2".into_flag());
     }
 }
