@@ -1,0 +1,18 @@
+[package]
+name = "domainnameapi"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.83"
+description = "Rust client for the DomainNameAPI domain-registrar REST API (faithful port of php-dna)"
+license = "Apache-2.0"
+repository = "https://github.com/domainreseller/rust-dna"
+homepage = "https://github.com/domainreseller/rust-dna"
+readme = "README.md"
+keywords = ["domain", "registrar", "dns", "domainnameapi", "reseller"]
+categories = ["api-bindings", "web-programming::http-client"]
+exclude = ["/.github", "/tests/conformance"]
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
