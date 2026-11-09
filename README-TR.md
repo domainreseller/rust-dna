@@ -12,7 +12,7 @@
 
 # rust-dna — Rust için DomainNameAPI istemcisi
 
-DomainNameAPI alan adı kayıt REST API'si için Rust istemcisi. Referans PHP kütüphanesi [php-dna](https://github.com/domainreseller/php-dna)'nın birebir bir uyarlamasıdır: aynı metotlar, ağa giden aynı istekler ve aynı dönüş değerleri. Her uyarlama php-dna'nın 126 uyumluluk (conformance) senaryosuna karşı doğrulanır.
+DomainNameAPI alan adı kayıt REST API'si için Rust istemcisi. Referans PHP kütüphanesi [php-dna](https://github.com/domainreseller/php-dna)'nın birebir bir uyarlamasıdır: aynı metotlar, ağa giden aynı istekler ve aynı dönüş değerleri. Her uyarlama php-dna'nın 134 uyumluluk (conformance) senaryosuna karşı doğrulanır.
 
 ## 📦 İndirme — her zaman Releases kullanın!
 
@@ -101,7 +101,7 @@ fn main() {
   - başarı: `{"result": "OK", "data": {...}}`
   - hata: `{"result": "ERROR", "error": {"Code": "...", "Message": "...", "Details": "..."}}`
   - birkaç metot php-dna'dan aynen alınmış başka bir zarf kullanır: `get_current_balance` bir `OperationResult` nesnesi döndürür, `check_availability` başarıda çıplak bir liste döndürür, `get_reseller_details` alanlarını en üst seviyede döndürür.
-- **Hatalar fırlatılmaz, döndürülür.** Gateway hataları, HTTP hataları ve ağ arızalarının hepsi hata zarfı olarak döner; hiçbir şey panic oluşturmaz.
+- **Hatalar fırlatılmaz, döndürülür.** Gateway hataları, HTTP hataları ve ağ arızalarının hepsi hata zarfı olarak döner; hiçbir şey panic oluşturmaz. Kayıt, transfer ve yenileme, gateway HTTP 200 ile `success: false` yanıtı verdiğinde de hata döndürür.
 - **Yapılandırılmış girdiler** (kişiler, nameserver listeleri, filtreler, TLD öznitelikleri, kayıt içerikleri) `json!` ile oluşturulan `&Value` değerleridir. Kişi haritaları php-dna'nın anahtarlarını kullanır (`FirstName`, `EMail`, `AddressLine1`, `PhoneCountryCode`, ...); hem düz hem iç içe (`Address.Line1`, `Phone.Phone.Number`) kişi biçimleri kabul edilir. Nameserver listeleri liste ya da harita olabilir (değerler kullanılır).
 - **Rust'ta varsayılan argüman yoktur.** Her metot php-dna'nın tam argüman listesini aynı sırayla alır. php-dna'nın varsayılanları sabit olarak dışa aktarılır: `DEFAULT_TTL` (3600), `DEFAULT_REASON` ("Owner request"), `DEFAULT_FORWARD_TYPE` ("Standard"), `DEFAULT_CURRENCY` ("USD"), `DEFAULT_TLD_COUNT` (20), `DEFAULT_COMMAND` ("create"). Dört isteğe bağlı argümanı olan `register_with_contact_info` için ayrıca, `Default` değeri php-dna'nın varsayılanları olan bir `RegisterOptions` yapısı alan `register_with_contact_info_opts` de vardır.
 
@@ -236,11 +236,10 @@ let result = dna.renew("example.com", 1);
 
 #### Domain Transferi
 
+Transferlerde kişi bilgileri asla gönderilmez: kişileri kayıt firması önceki kayıt firmasından devralır, bu yüzden her transfer isteği `contacts: []` taşır.
+
 ```rust
 let result = dna.transfer("example.com", "Xy9#mK2$", 3);
-
-// php-dna's facade sends no contacts with a transfer; to send them:
-let result = dna.transfer_with_contacts("example.com", "Xy9#mK2$", 3, &contacts);
 ```
 
 <details>
@@ -625,6 +624,8 @@ let result = dna.modify_child_name_server("example.com", "ns1.example.com", "1.2
 
 #### Domain Gizliliğini Değiştirme
 
+`status` bir `bool` ya da panellerin sakladığı biçimde bir değerdir: `"1"`, `"on"`, `"true"`, `"yes"` ve `1` açık demektir, diğer her şey kapalı. Gerekçe (reason) argümanı yalnızca uyumluluk için tutulur ve gönderilmez, çünkü gateway'de böyle bir alan yoktur.
+
 ```rust
 let result = dna.modify_privacy_protection_status("example.com", true, "Owner request");
 ```
@@ -733,7 +734,7 @@ let result = dna.save_contacts("example.com", &json!({
 
 #### DNS Zone Kayıtları
 
-Gateway kayıtları **kümeler** halinde saklar (bir veya daha fazla değer tutan bir ad + tip). Bir kümeyi yazmak tüm değerlerini değiştirir, herhangi bir değeri silmek ise kümenin tamamını kaldırır. `*_value` metotları oku-birleştir-yaz işlemini sizin yerinize yapar; böylece bir panel kayıtları tek tek ele alabilir. Adlar göreli (`www`), apex için `@` / boş ya da tam nitelikli olabilir; gateway'in beklediği göreli etikete indirgenir. Desteklenen tipler: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT. `apply` `true` olduğunda (php-dna varsayılanı) değişiklikler hemen uygulanır; aksi halde `apply_resource_records` çağırın. Gateway ani istek patlamalarını sınırladığı için zone çağrıları arasında en az bir saniye bırakılır.
+Gateway kayıtları **kümeler** halinde saklar (bir veya daha fazla değer tutan bir ad + tip). Bir kümeyi yazmak tüm değerlerini değiştirir, herhangi bir değeri silmek ise kümenin tamamını kaldırır. `*_value` metotları oku-birleştir-yaz işlemini sizin yerinize yapar; böylece bir panel kayıtları tek tek ele alabilir. Adlar göreli (`www`), apex için `@` / boş ya da tam nitelikli olabilir; gateway'in beklediği göreli etikete indirgenir. Desteklenen tipler: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT. `apply` `true` olduğunda (php-dna varsayılanı) değişiklikler hemen uygulanır; aksi halde `apply_resource_records` çağırın. Gateway ani istek patlamalarını sınırladığı için zone çağrıları arasında en az bir saniye bırakılır. Otomatik uygulama başarısız olursa metot uygulama hatasını döndürür (değişiklik beklemede kalır). Sonuçlar büyük harfe çevrilmiş tipi ve gerçekten gönderilen TTL'yi bildirir (1'in altı 3600, 86400'ün üstü 86400 olur).
 
 ```rust
 // List every record (one row per value; names come back as FQDNs)
@@ -812,7 +813,7 @@ let result = dna.delete_forwarding("example.com");
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org/landing", "ForwardType": "Frame"}}
 ```
 
-Yönlendirme tanımlı değilse `get_forwarding` şunu döndürür: `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`. `set_forwarding` şunu döndürür: `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`.
+Yönlendirme tanımlı değilse (gateway `Redirect information not found` yanıtı verir) `get_forwarding` şunu döndürür: `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`; alan adının bulunmaması gibi diğer tüm hatalar hata olarak döner. `set_forwarding` şunu döndürür: `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`. `delete_forwarding` `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}` döndürür; yönlendirme tanımlı değilse `"Removed": false` döner.
 
 </details>
 
@@ -822,7 +823,7 @@ Yönlendirme tanımlı değilse `get_forwarding` şunu döndürür: `{"result": 
 
 ```rust
 let result = dna.get_reseller_details();
-let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
+let balance = dna.get_current_balance("USD"); // "USD" or "TRY"
 ```
 
 <details>
@@ -839,7 +840,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
   "symbol": "$",
   "balances": [
     {"balance": "601.64", "currency": "USD", "symbol": "$"},
-    {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+    {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
   ]
 }
 ```
@@ -859,7 +860,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
 }
 ```
 
-Hata durumunda `OperationResult` `"FAILED"` olur, `ErrorCode` hata kodunu tutar (ör. `"API_429"`) ve `Balance` `"0.00"` olur.
+Hesap USD ve TRY bakiyelerini bildirir; başka bir para birimi (EUR, GBP, ...) `ErrorCode` `"BALANCE"` ile başarısız olur. Hata durumunda `OperationResult` `"FAILED"` olur, `ErrorCode` hata kodunu tutar (ör. `"API_429"`) ve `Balance` `"0.00"` olur.
 
 </details>
 
@@ -884,14 +885,14 @@ let contact = dna.validate_contact(&json!({
 ```json
 {
   "FirstName": "Jo",
-  "Phone": "12025550100",
+  "Phone": "2025550100",
   "Country": "TR",
   "LastName": "Isimyok",
   "AddressLine1": "Addres yok",
   "City": "ISTANBUL",
-  "State": "ISTANBUL",
   "ZipCode": "34000",
-  "PhoneCountryCode": "90",
+  "PhoneCountryCode": "1",
+  "State": "ISTANBUL",
   "Fax": "",
   "FaxCountryCode": ""
 }
@@ -908,16 +909,17 @@ Her ağ metodu bir değer döndürür; `result` alanını kontrol edin:
 ```rust
 let out = dna.get_details("missing.com");
 if out["result"] == "ERROR" {
-    println!("{}", out["error"]["Code"]);    // "API_404"
-    println!("{}", out["error"]["Message"]); // "The domain name you requested could not be found. ..."
+    println!("{}", out["error"]["Code"]);        // "API_404"
+    println!("{}", out["error"]["GatewayCode"]); // "Dna.DomainService:Domain:10007"
+    println!("{}", out["error"]["Message"]);     // "The domain name you requested could not be found. ..."
     println!("{}", out["error"]["Details"]);
 }
 ```
 
-- HTTP hataları `API_<durum>` kodunu kullanır (`API_400`, `API_404`, `API_429`, `API_500`, ...). Boş bir hata gövdesi `HTTP 429 - Too Many Requests` gibi okunabilir bir mesaja dönüştürülür.
+- HTTP hataları `API_<durum>` kodunu kullanır (`API_400`, `API_404`, `API_429`, `API_500`, ...). Boş bir hata gövdesi `HTTP 429 - Too Many Requests` gibi okunabilir bir mesaja dönüştürülür. Gateway kendi hata kodunu gönderdiyse, zarf bunu `GatewayCode` olarak da taşır (ör. `"Dna.DomainService:Domain:10007"`).
 - 301/302 yanıtı hatalı kimlik bilgisi demektir: `Invalid API credentials`.
 - Gateway doğrulama hataları alanın adını belirterek `Details` içinde düzleştirilir, ör. `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
-- Ağ arızaları hata olarak döner, asla boş bir başarı olarak değil. Zaman aşımı mesajı `Could not reach the DomainNameAPI service: the connection timed out. (...)` şeklindedir; diğer arızalar `Curl error during request: ...` olarak okunur. Zarf kodu `API_<curl hata numarası>`'dır (zaman aşımı için `API_28`, DNS için `API_6`, reddedilen bağlantı için `API_7`) ve `get_parsed_response_data()["Code"]` `CURL_<n>` değerini tutar.
+- Ağ arızaları hata olarak döner, asla boş bir başarı olarak değil. Zaman aşımı mesajı `Could not reach the DomainNameAPI service: the connection timed out. (...)` şeklindedir; diğer arızalar `Curl error during request: ...` olarak okunur. Kodları `CURL_<curl hata numarası>`'dır (zaman aşımı için `CURL_28`, DNS için `CURL_6`, reddedilen bağlantı için `CURL_7`); `API_<n>` HTTP durumlarına ayrılmıştır.
 - Yerel doğrulama (desteklenmeyen kayıt tipi, eksik yönlendirme adresi, kontrol edilecek alan adı olmaması) herhangi bir istekten önce açıklayıcı bir kodla başarısız olur (`ADD_ZONE`, `SET_FORWARD`, `AVAILABILITY`, ...).
 
 ### Tanılama
@@ -962,7 +964,7 @@ Test paketi ağ bağlantısı veya kimlik bilgisi gerektirmez:
 cargo test
 ```
 
-HTTP katmanı, hata eşleme, telemetri maskeleme ve yardımcı araçlar için birim testleri ile `tests/conformance/` altındaki 126 php-dna senaryosunun tamamını yeniden oynatan ve ağa giden her isteğin ve her dönüş değerinin php-dna ile aynı olduğunu doğrulayan bir uyumluluk testi içerir.
+HTTP katmanı, hata eşleme, telemetri maskeleme ve yardımcı araçlar için birim testleri ile `tests/conformance/` altındaki 134 php-dna senaryosunun tamamını yeniden oynatan ve ağa giden her isteğin ve her dönüş değerinin php-dna ile aynı olduğunu doğrulayan bir uyumluluk testi içerir.
 
 ## Hata raporlama (telemetri)
 

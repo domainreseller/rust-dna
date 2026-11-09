@@ -12,7 +12,7 @@
 
 # rust-dna — عميل DomainNameAPI للغة Rust
 
-عميل بلغة Rust لواجهة REST البرمجية الخاصة بمسجّل النطاقات DomainNameAPI. وهو نقل أمين لمكتبة PHP المرجعية [php-dna](https://github.com/domainreseller/php-dna): الدوال نفسها، والطلبات نفسها المرسلة عبر الشبكة، والقيم المُعادة نفسها. يُتحقَّق من كل نسخة منقولة مقابل 126 حالة توافق (conformance fixtures) من php-dna.
+عميل بلغة Rust لواجهة REST البرمجية الخاصة بمسجّل النطاقات DomainNameAPI. وهو نقل أمين لمكتبة PHP المرجعية [php-dna](https://github.com/domainreseller/php-dna): الدوال نفسها، والطلبات نفسها المرسلة عبر الشبكة، والقيم المُعادة نفسها. يُتحقَّق من كل نسخة منقولة مقابل 134 حالة توافق (conformance fixtures) من php-dna.
 
 ## 📦 التنزيل — استخدم دائمًا صفحة الإصدارات (Releases)!
 
@@ -101,7 +101,7 @@ fn main() {
   - النجاح: `{"result": "OK", "data": {...}}`
   - الفشل: `{"result": "ERROR", "error": {"Code": "...", "Message": "...", "Details": "..."}}`
   - بعض الدوال تستخدم غلافًا آخر منقولًا من php-dna: تعيد `get_current_balance` كائن `OperationResult`، وتعيد `check_availability` قائمة مجرّدة عند النجاح، وتعيد `get_reseller_details` حقولها في المستوى الأعلى.
-- **تُعاد الأخطاء ولا تُرمى.** أخطاء البوابة وأخطاء HTTP وأعطال الشبكة تعود جميعها كغلاف خطأ؛ لا شيء يسبب panic.
+- **تُعاد الأخطاء ولا تُرمى.** أخطاء البوابة وأخطاء HTTP وأعطال الشبكة تعود جميعها كغلاف خطأ؛ لا شيء يسبب panic. كما تعيد عمليات التسجيل والنقل والتجديد خطأً عندما تجيب البوابة بـ HTTP 200 مع `success: false`.
 - **المدخلات المُهيكلة** (جهات الاتصال، قوائم خوادم الأسماء، المرشحات، سمات TLD، محتويات السجلات) هي قيم `&Value` تُبنى باستخدام `json!`. تستخدم خرائط جهات الاتصال مفاتيح php-dna (`FirstName` و`EMail` و`AddressLine1` و`PhoneCountryCode`، ...)؛ ويُقبل الشكلان المسطّح والمتداخل (`Address.Line1` و`Phone.Phone.Number`). يمكن أن تكون قوائم خوادم الأسماء قائمة أو خريطة (تُستخدم القيم).
 - **لا توجد معاملات افتراضية في Rust.** تأخذ كل دالة قائمة معاملات php-dna الكاملة بالترتيب نفسه. تُصدَّر القيم الافتراضية لـ php-dna كثوابت: `DEFAULT_TTL` (3600) و`DEFAULT_REASON` ("Owner request") و`DEFAULT_FORWARD_TYPE` ("Standard") و`DEFAULT_CURRENCY` ("USD") و`DEFAULT_TLD_COUNT` (20) و`DEFAULT_COMMAND` ("create"). ولـ `register_with_contact_info`، التي لها أربعة معاملات اختيارية، توجد أيضًا `register_with_contact_info_opts` التي تأخذ بنية `RegisterOptions` تكون قيمتها `Default` هي القيم الافتراضية لـ php-dna.
 
@@ -236,11 +236,10 @@ let result = dna.renew("example.com", 1);
 
 #### نقل النطاق
 
+لا تُرسل عمليات النقل بيانات جهات الاتصال أبدًا: يتسلّم المسجّل جهات الاتصال من المسجّل السابق، لذا يحمل كل طلب نقل `contacts: []`.
+
 ```rust
 let result = dna.transfer("example.com", "Xy9#mK2$", 3);
-
-// php-dna's facade sends no contacts with a transfer; to send them:
-let result = dna.transfer_with_contacts("example.com", "Xy9#mK2$", 3, &contacts);
 ```
 
 <details>
@@ -625,6 +624,8 @@ let result = dna.modify_child_name_server("example.com", "ns1.example.com", "1.2
 
 #### تعديل خصوصية النطاق
 
+`status` قيمة من نوع `bool` أو قيمة كما تخزّنها لوحات التحكم: `"1"` و`"on"` و`"true"` و`"yes"` و`1` تعني التفعيل، وأي قيمة أخرى تعني الإيقاف. يُحتفظ بمعامل السبب (reason) للتوافق فقط ولا يُرسَل، لأن البوابة لا تحتوي على مثل هذا الحقل.
+
 ```rust
 let result = dna.modify_privacy_protection_status("example.com", true, "Owner request");
 ```
@@ -733,7 +734,7 @@ let result = dna.save_contacts("example.com", &json!({
 
 #### سجلات منطقة DNS
 
-تخزّن البوابة السجلات على شكل **مجموعات** (اسم + نوع يحمل قيمة واحدة أو أكثر). كتابة مجموعة تستبدل جميع قيمها، وحذف أي قيمة يزيل المجموعة كاملة. تتولى دوال `*_value` عملية القراءة ثم الدمج ثم الكتابة نيابةً عنك، كي تتعامل لوحة التحكم مع السجلات واحدًا تلو الآخر. يمكن أن تكون الأسماء نسبية (`www`)، أو `@` / فارغة للجذر (apex)، أو مؤهلة بالكامل؛ وتُختصر إلى التسمية النسبية التي تتوقعها البوابة. الأنواع المدعومة: A وAAAA وALIAS وCAA وCNAME وDS وMX وNAPTR وPTR وSRV وTLSA وTXT. تُطبَّق التغييرات فورًا عندما تكون `apply` مساوية لـ `true` (القيمة الافتراضية في php-dna)؛ وإلا فاستدعِ `apply_resource_records`. يُترك فاصل لا يقل عن ثانية واحدة بين استدعاءات المنطقة لأن البوابة تحدّ من الطلبات المتلاحقة.
+تخزّن البوابة السجلات على شكل **مجموعات** (اسم + نوع يحمل قيمة واحدة أو أكثر). كتابة مجموعة تستبدل جميع قيمها، وحذف أي قيمة يزيل المجموعة كاملة. تتولى دوال `*_value` عملية القراءة ثم الدمج ثم الكتابة نيابةً عنك، كي تتعامل لوحة التحكم مع السجلات واحدًا تلو الآخر. يمكن أن تكون الأسماء نسبية (`www`)، أو `@` / فارغة للجذر (apex)، أو مؤهلة بالكامل؛ وتُختصر إلى التسمية النسبية التي تتوقعها البوابة. الأنواع المدعومة: A وAAAA وALIAS وCAA وCNAME وDS وMX وNAPTR وPTR وSRV وTLSA وTXT. تُطبَّق التغييرات فورًا عندما تكون `apply` مساوية لـ `true` (القيمة الافتراضية في php-dna)؛ وإلا فاستدعِ `apply_resource_records`. يُترك فاصل لا يقل عن ثانية واحدة بين استدعاءات المنطقة لأن البوابة تحدّ من الطلبات المتلاحقة. إذا فشل التطبيق التلقائي، تعيد الدالة خطأ التطبيق (ويبقى التغيير معلّقًا). وتذكر النتائج النوع بأحرف كبيرة وقيمة TTL المرسلة فعليًا (ما دون 1 يصبح 3600، وما فوق 86400 يصبح 86400).
 
 ```rust
 // List every record (one row per value; names come back as FQDNs)
@@ -812,7 +813,7 @@ let result = dna.delete_forwarding("example.com");
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org/landing", "ForwardType": "Frame"}}
 ```
 
-إذا لم تكن إعادة التوجيه مُعدّة، تعيد `get_forwarding` القيمة `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`. وتعيد `set_forwarding` القيمة `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`.
+إذا لم تكن إعادة التوجيه مُعدّة (تجيب البوابة بـ `Redirect information not found`)، تعيد `get_forwarding` القيمة `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`؛ وأي فشل آخر، مثل عدم وجود النطاق، يُعاد كخطأ. وتعيد `set_forwarding` القيمة `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`. وتعيد `delete_forwarding` القيمة `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`، أو `"Removed": false` إذا لم تكن هناك إعادة توجيه مُعدّة.
 
 </details>
 
@@ -822,7 +823,7 @@ let result = dna.delete_forwarding("example.com");
 
 ```rust
 let result = dna.get_reseller_details();
-let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
+let balance = dna.get_current_balance("USD"); // "USD" or "TRY"
 ```
 
 <details>
@@ -839,7 +840,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
   "symbol": "$",
   "balances": [
     {"balance": "601.64", "currency": "USD", "symbol": "$"},
-    {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+    {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
   ]
 }
 ```
@@ -859,7 +860,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
 }
 ```
 
-عند الفشل تكون `OperationResult` مساوية لـ `"FAILED"`، ويحمل `ErrorCode` رمز الخطأ (مثل `"API_429"`)، وتكون `Balance` مساوية لـ `"0.00"`.
+يُبلغ الحساب عن رصيدَي USD وTRY فقط؛ وأي عملة أخرى (EUR وGBP، ...) تفشل مع `ErrorCode` بالقيمة `"BALANCE"`. عند الفشل تكون `OperationResult` مساوية لـ `"FAILED"`، ويحمل `ErrorCode` رمز الخطأ (مثل `"API_429"`)، وتكون `Balance` مساوية لـ `"0.00"`.
 
 </details>
 
@@ -884,14 +885,14 @@ let contact = dna.validate_contact(&json!({
 ```json
 {
   "FirstName": "Jo",
-  "Phone": "12025550100",
+  "Phone": "2025550100",
   "Country": "TR",
   "LastName": "Isimyok",
   "AddressLine1": "Addres yok",
   "City": "ISTANBUL",
-  "State": "ISTANBUL",
   "ZipCode": "34000",
-  "PhoneCountryCode": "90",
+  "PhoneCountryCode": "1",
+  "State": "ISTANBUL",
   "Fax": "",
   "FaxCountryCode": ""
 }
@@ -908,16 +909,17 @@ let contact = dna.validate_contact(&json!({
 ```rust
 let out = dna.get_details("missing.com");
 if out["result"] == "ERROR" {
-    println!("{}", out["error"]["Code"]);    // "API_404"
-    println!("{}", out["error"]["Message"]); // "The domain name you requested could not be found. ..."
+    println!("{}", out["error"]["Code"]);        // "API_404"
+    println!("{}", out["error"]["GatewayCode"]); // "Dna.DomainService:Domain:10007"
+    println!("{}", out["error"]["Message"]);     // "The domain name you requested could not be found. ..."
     println!("{}", out["error"]["Details"]);
 }
 ```
 
-- تستخدم أخطاء HTTP الرمز `API_<الحالة>` (`API_400` و`API_404` و`API_429` و`API_500`، ...). ويتحوّل جسم الخطأ الفارغ إلى رسالة مقروءة مثل `HTTP 429 - Too Many Requests`.
+- تستخدم أخطاء HTTP الرمز `API_<الحالة>` (`API_400` و`API_404` و`API_429` و`API_500`، ...). ويتحوّل جسم الخطأ الفارغ إلى رسالة مقروءة مثل `HTTP 429 - Too Many Requests`. وعندما ترسل البوابة رمز خطأ خاصًا بها، يحمله الغلاف أيضًا في `GatewayCode` (مثل `"Dna.DomainService:Domain:10007"`).
 - الرد 301/302 يعني بيانات اعتماد خاطئة: `Invalid API credentials`.
 - تُجمَع أخطاء التحقق الصادرة عن البوابة في `Details` مع ذكر اسم الحقل، مثل `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
-- أعطال الشبكة أخطاء، ولا تكون أبدًا نجاحًا فارغًا. تُقرأ مهلة الانتظار هكذا: `Could not reach the DomainNameAPI service: the connection timed out. (...)`؛ وتُقرأ الأعطال الأخرى هكذا: `Curl error during request: ...`. رمز الغلاف هو `API_<رقم خطأ curl>` (`API_28` لانتهاء المهلة، و`API_6` لـ DNS، و`API_7` للاتصال المرفوض)، ويحمل `get_parsed_response_data()["Code"]` القيمة `CURL_<n>`.
+- أعطال الشبكة أخطاء، ولا تكون أبدًا نجاحًا فارغًا. تُقرأ مهلة الانتظار هكذا: `Could not reach the DomainNameAPI service: the connection timed out. (...)`؛ وتُقرأ الأعطال الأخرى هكذا: `Curl error during request: ...`. رمزها هو `CURL_<رقم خطأ curl>` (`CURL_28` لانتهاء المهلة، و`CURL_6` لـ DNS، و`CURL_7` للاتصال المرفوض)؛ أما `API_<n>` فمخصّص لحالات HTTP.
 - يفشل التحقق المحلي (نوع سجل غير مدعوم، عنوان إعادة توجيه مفقود، عدم وجود نطاقات للتحقق) قبل أي طلب برمز وصفي (`ADD_ZONE` و`SET_FORWARD` و`AVAILABILITY`، ...).
 
 ### التشخيص
@@ -962,7 +964,7 @@ dna.set_transport(Box::new(MyTransport));
 cargo test
 ```
 
-تحتوي على اختبارات وحدة لطبقة HTTP، وتحويل الأخطاء، وإخفاء بيانات القياس عن بُعد، والأدوات المساعدة، إضافةً إلى اختبار توافق يعيد تشغيل جميع حالات php-dna البالغ عددها 126 من `tests/conformance/` ويتحقق من أن كل طلب مُرسَل وكل قيمة مُعادة يطابقان php-dna.
+تحتوي على اختبارات وحدة لطبقة HTTP، وتحويل الأخطاء، وإخفاء بيانات القياس عن بُعد، والأدوات المساعدة، إضافةً إلى اختبار توافق يعيد تشغيل جميع حالات php-dna البالغ عددها 134 من `tests/conformance/` ويتحقق من أن كل طلب مُرسَل وكل قيمة مُعادة يطابقان php-dna.
 
 ## الإبلاغ عن الأخطاء (القياس عن بُعد)
 

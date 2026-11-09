@@ -12,7 +12,7 @@
 
 # rust-dna — 适用于 Rust 的 DomainNameAPI 客户端
 
-DomainNameAPI 域名注册商 REST API 的 Rust 客户端。它是参考 PHP 库 [php-dna](https://github.com/domainreseller/php-dna) 的忠实移植：相同的方法、相同的网络请求和相同的返回值。每个移植版本都通过 php-dna 的 126 个一致性测试用例（conformance fixtures）进行验证。
+DomainNameAPI 域名注册商 REST API 的 Rust 客户端。它是参考 PHP 库 [php-dna](https://github.com/domainreseller/php-dna) 的忠实移植：相同的方法、相同的网络请求和相同的返回值。每个移植版本都通过 php-dna 的 134 个一致性测试用例（conformance fixtures）进行验证。
 
 ## 📦 下载 — 请务必使用 Releases！
 
@@ -101,7 +101,7 @@ fn main() {
   - 成功：`{"result": "OK", "data": {...}}`
   - 失败：`{"result": "ERROR", "error": {"Code": "...", "Message": "...", "Details": "..."}}`
   - 少数方法使用沿袭自 php-dna 的其他外层结构：`get_current_balance` 返回 `OperationResult` 对象，`check_availability` 成功时返回普通列表，`get_reseller_details` 在顶层返回其字段。
-- **错误以返回值形式给出，从不抛出。** 网关错误、HTTP 错误和网络故障都会以错误结构返回；不会引发 panic。
+- **错误以返回值形式给出，从不抛出。** 网关错误、HTTP 错误和网络故障都会以错误结构返回；不会引发 panic。当网关以 HTTP 200 返回 `success: false` 时，注册、转移和续费同样会返回错误。
 - **结构化输入**（联系人、域名服务器列表、筛选条件、TLD 属性、记录内容）是用 `json!` 构建的 `&Value`。联系人映射使用 php-dna 的键（`FirstName`、`EMail`、`AddressLine1`、`PhoneCountryCode`……）；平铺和嵌套（`Address.Line1`、`Phone.Phone.Number`）两种联系人格式均被接受。域名服务器列表可以是列表或映射（使用其中的值）。
 - **Rust 没有默认参数。** 每个方法都按相同顺序接收 php-dna 的完整参数列表。php-dna 的默认值以常量形式导出：`DEFAULT_TTL`（3600）、`DEFAULT_REASON`（"Owner request"）、`DEFAULT_FORWARD_TYPE`（"Standard"）、`DEFAULT_CURRENCY`（"USD"）、`DEFAULT_TLD_COUNT`（20）、`DEFAULT_COMMAND`（"create"）。带有四个可选参数的 `register_with_contact_info` 还提供 `register_with_contact_info_opts`，它接收一个 `RegisterOptions` 结构体，其 `Default` 即为 php-dna 的默认值。
 
@@ -236,11 +236,10 @@ let result = dna.renew("example.com", 1);
 
 #### 域名转移
 
+转移从不发送联系人信息：注册商会从原注册商接管联系人，因此每个转移请求都携带 `contacts: []`。
+
 ```rust
 let result = dna.transfer("example.com", "Xy9#mK2$", 3);
-
-// php-dna's facade sends no contacts with a transfer; to send them:
-let result = dna.transfer_with_contacts("example.com", "Xy9#mK2$", 3, &contacts);
 ```
 
 <details>
@@ -625,6 +624,8 @@ let result = dna.modify_child_name_server("example.com", "ns1.example.com", "1.2
 
 #### 修改域名隐私保护
 
+`status` 可以是 `bool`，也可以是面板保存的值：`"1"`、`"on"`、`"true"`、`"yes"` 和 `1` 表示开启，其他任何值表示关闭。原因（reason）参数仅为兼容而保留，不会被发送，因为网关没有该字段。
+
 ```rust
 let result = dna.modify_privacy_protection_status("example.com", true, "Owner request");
 ```
@@ -733,7 +734,7 @@ let result = dna.save_contacts("example.com", &json!({
 
 #### DNS 区域记录
 
-网关以**记录集**的形式存储记录（一个名称 + 类型，包含一个或多个值）。写入记录集会替换其全部值，删除其中任意一个值会删除整个记录集。`*_value` 方法会替你完成"读取-合并-写入"，使面板可以逐条处理记录。名称可以是相对名称（`www`）、表示顶点（apex）的 `@` / 空字符串，或完全限定名称；它们会被归约为网关期望的相对标签。支持的类型：A、AAAA、ALIAS、CAA、CNAME、DS、MX、NAPTR、PTR、SRV、TLSA、TXT。当 `apply` 为 `true`（php-dna 的默认值）时更改会立即生效；否则请调用 `apply_resource_records`。由于网关会限制突发请求，区域调用之间至少间隔一秒。
+网关以**记录集**的形式存储记录（一个名称 + 类型，包含一个或多个值）。写入记录集会替换其全部值，删除其中任意一个值会删除整个记录集。`*_value` 方法会替你完成"读取-合并-写入"，使面板可以逐条处理记录。名称可以是相对名称（`www`）、表示顶点（apex）的 `@` / 空字符串，或完全限定名称；它们会被归约为网关期望的相对标签。支持的类型：A、AAAA、ALIAS、CAA、CNAME、DS、MX、NAPTR、PTR、SRV、TLSA、TXT。当 `apply` 为 `true`（php-dna 的默认值）时更改会立即生效；否则请调用 `apply_resource_records`。由于网关会限制突发请求，区域调用之间至少间隔一秒。如果自动应用失败，该方法会返回应用错误（更改仍处于暂存状态）。结果中报告的是转换为大写的类型和实际发送的 TTL（小于 1 时变为 3600，大于 86400 时变为 86400）。
 
 ```rust
 // List every record (one row per value; names come back as FQDNs)
@@ -812,7 +813,7 @@ let result = dna.delete_forwarding("example.com");
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org/landing", "ForwardType": "Frame"}}
 ```
 
-未配置转发时，`get_forwarding` 返回 `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`。`set_forwarding` 返回 `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`。
+未配置转发时（网关返回 `Redirect information not found`），`get_forwarding` 返回 `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`；其他任何失败（例如域名不存在）都会作为错误返回。`set_forwarding` 返回 `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`。`delete_forwarding` 返回 `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`；若未设置转发则为 `"Removed": false`。
 
 </details>
 
@@ -822,7 +823,7 @@ let result = dna.delete_forwarding("example.com");
 
 ```rust
 let result = dna.get_reseller_details();
-let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
+let balance = dna.get_current_balance("USD"); // "USD" or "TRY"
 ```
 
 <details>
@@ -839,7 +840,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
   "symbol": "$",
   "balances": [
     {"balance": "601.64", "currency": "USD", "symbol": "$"},
-    {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+    {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
   ]
 }
 ```
@@ -859,7 +860,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
 }
 ```
 
-失败时 `OperationResult` 为 `"FAILED"`，`ErrorCode` 包含错误码（例如 `"API_429"`），`Balance` 为 `"0.00"`。
+账户只报告 USD 和 TRY 余额；其他任何货币（EUR、GBP……）都会以 `ErrorCode` `"BALANCE"` 失败。失败时 `OperationResult` 为 `"FAILED"`，`ErrorCode` 包含错误码（例如 `"API_429"`），`Balance` 为 `"0.00"`。
 
 </details>
 
@@ -884,14 +885,14 @@ let contact = dna.validate_contact(&json!({
 ```json
 {
   "FirstName": "Jo",
-  "Phone": "12025550100",
+  "Phone": "2025550100",
   "Country": "TR",
   "LastName": "Isimyok",
   "AddressLine1": "Addres yok",
   "City": "ISTANBUL",
-  "State": "ISTANBUL",
   "ZipCode": "34000",
-  "PhoneCountryCode": "90",
+  "PhoneCountryCode": "1",
+  "State": "ISTANBUL",
   "Fax": "",
   "FaxCountryCode": ""
 }
@@ -908,16 +909,17 @@ let contact = dna.validate_contact(&json!({
 ```rust
 let out = dna.get_details("missing.com");
 if out["result"] == "ERROR" {
-    println!("{}", out["error"]["Code"]);    // "API_404"
-    println!("{}", out["error"]["Message"]); // "The domain name you requested could not be found. ..."
+    println!("{}", out["error"]["Code"]);        // "API_404"
+    println!("{}", out["error"]["GatewayCode"]); // "Dna.DomainService:Domain:10007"
+    println!("{}", out["error"]["Message"]);     // "The domain name you requested could not be found. ..."
     println!("{}", out["error"]["Details"]);
 }
 ```
 
-- HTTP 错误使用 `API_<状态码>` 代码（`API_400`、`API_404`、`API_429`、`API_500`……）。空的错误响应体会转换为可读消息，例如 `HTTP 429 - Too Many Requests`。
+- HTTP 错误使用 `API_<状态码>` 代码（`API_400`、`API_404`、`API_429`、`API_500`……）。空的错误响应体会转换为可读消息，例如 `HTTP 429 - Too Many Requests`。如果网关发送了自己的错误码，外层结构还会以 `GatewayCode` 携带它（例如 `"Dna.DomainService:Domain:10007"`）。
 - 301/302 响应表示凭据错误：`Invalid API credentials`。
 - 网关的校验错误会被合并到 `Details` 中，并指明字段，例如 `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
-- 网络故障属于错误，绝不会表现为空的成功。超时消息为 `Could not reach the DomainNameAPI service: the connection timed out. (...)`；其他故障消息为 `Curl error during request: ...`。外层结构中的代码为 `API_<curl 错误号>`（超时为 `API_28`，DNS 为 `API_6`，连接被拒绝为 `API_7`），而 `get_parsed_response_data()["Code"]` 中为 `CURL_<n>`。
+- 网络故障属于错误，绝不会表现为空的成功。超时消息为 `Could not reach the DomainNameAPI service: the connection timed out. (...)`；其他故障消息为 `Curl error during request: ...`。其代码为 `CURL_<curl 错误号>`（超时为 `CURL_28`，DNS 为 `CURL_6`，连接被拒绝为 `CURL_7`）；`API_<n>` 仅用于 HTTP 状态码。
 - 本地校验（不支持的记录类型、缺少转发地址、没有要查询的域名）会在发出任何请求之前以描述性代码失败（`ADD_ZONE`、`SET_FORWARD`、`AVAILABILITY`……）。
 
 ### 诊断
@@ -962,7 +964,7 @@ dna.set_transport(Box::new(MyTransport));
 cargo test
 ```
 
-其中包括针对 HTTP 层、错误映射、遥测脱敏和实用工具的单元测试，以及一个一致性测试：它重放 `tests/conformance/` 中全部 126 个 php-dna 测试用例，并检查每个发出的请求和每个返回值都与 php-dna 一致。
+其中包括针对 HTTP 层、错误映射、遥测脱敏和实用工具的单元测试，以及一个一致性测试：它重放 `tests/conformance/` 中全部 134 个 php-dna 测试用例，并检查每个发出的请求和每个返回值都与 php-dna 一致。
 
 ## 错误报告（遥测）
 

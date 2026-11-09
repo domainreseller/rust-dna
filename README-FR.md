@@ -12,7 +12,7 @@
 
 # rust-dna — client DomainNameAPI pour Rust
 
-Client Rust pour l'API REST du bureau d'enregistrement de domaines DomainNameAPI. C'est un portage fidèle de la bibliothèque PHP de référence [php-dna](https://github.com/domainreseller/php-dna) : les mêmes méthodes, les mêmes requêtes sur le réseau et les mêmes valeurs de retour. Chaque portage est vérifié avec les 126 fixtures de conformité de php-dna.
+Client Rust pour l'API REST du bureau d'enregistrement de domaines DomainNameAPI. C'est un portage fidèle de la bibliothèque PHP de référence [php-dna](https://github.com/domainreseller/php-dna) : les mêmes méthodes, les mêmes requêtes sur le réseau et les mêmes valeurs de retour. Chaque portage est vérifié avec les 134 fixtures de conformité de php-dna.
 
 ## 📦 Téléchargement — utilisez toujours les Releases !
 
@@ -101,7 +101,7 @@ Chaque exemple du dossier [examples/](examples) s'exécute avec `cargo run --exa
   - succès : `{"result": "OK", "data": {...}}`
   - échec : `{"result": "ERROR", "error": {"Code": "...", "Message": "...", "Details": "..."}}`
   - quelques méthodes utilisent une autre enveloppe, reprise de php-dna : `get_current_balance` renvoie un objet `OperationResult`, `check_availability` renvoie une simple liste en cas de succès, `get_reseller_details` renvoie ses champs au premier niveau.
-- **Les erreurs sont renvoyées, jamais levées.** Les erreurs de la passerelle, les erreurs HTTP et les pannes réseau reviennent toutes sous forme d'enveloppe d'erreur ; rien ne provoque de panic.
+- **Les erreurs sont renvoyées, jamais levées.** Les erreurs de la passerelle, les erreurs HTTP et les pannes réseau reviennent toutes sous forme d'enveloppe d'erreur ; rien ne provoque de panic. L'enregistrement, le transfert et le renouvellement renvoient aussi une erreur lorsque la passerelle répond HTTP 200 avec `success: false`.
 - **Les entrées structurées** (contacts, listes de serveurs de noms, filtres, attributs de TLD, contenus d'enregistrements) sont des `&Value` construites avec `json!`. Les maps de contact utilisent les clés de php-dna (`FirstName`, `EMail`, `AddressLine1`, `PhoneCountryCode`, ...) ; les formes plate et imbriquée (`Address.Line1`, `Phone.Phone.Number`) sont acceptées. Les listes de serveurs de noms peuvent être une liste ou une map (les valeurs sont utilisées).
 - **Pas d'arguments par défaut en Rust.** Chaque méthode prend la liste complète des arguments de php-dna, dans le même ordre. Les valeurs par défaut de php-dna sont exportées comme constantes : `DEFAULT_TTL` (3600), `DEFAULT_REASON` ("Owner request"), `DEFAULT_FORWARD_TYPE` ("Standard"), `DEFAULT_CURRENCY` ("USD"), `DEFAULT_TLD_COUNT` (20), `DEFAULT_COMMAND` ("create"). `register_with_contact_info`, qui a quatre arguments optionnels, dispose aussi de `register_with_contact_info_opts`, qui prend une structure `RegisterOptions` dont le `Default` correspond aux valeurs par défaut de php-dna.
 
@@ -236,11 +236,10 @@ let result = dna.renew("example.com", 1);
 
 #### Transfert de domaine
 
+Les transferts n'envoient jamais de coordonnées de contact : le bureau d'enregistrement reprend les contacts de l'ancien bureau d'enregistrement, chaque requête de transfert contient donc `contacts: []`.
+
 ```rust
 let result = dna.transfer("example.com", "Xy9#mK2$", 3);
-
-// php-dna's facade sends no contacts with a transfer; to send them:
-let result = dna.transfer_with_contacts("example.com", "Xy9#mK2$", 3, &contacts);
 ```
 
 <details>
@@ -625,6 +624,8 @@ let result = dna.modify_child_name_server("example.com", "ns1.example.com", "1.2
 
 #### Modifier la confidentialité du domaine
 
+`status` est un `bool` ou une valeur telle que les panneaux la stockent : `"1"`, `"on"`, `"true"`, `"yes"` et `1` signifient activé, toute autre valeur désactivé. L'argument de motif (reason) n'est conservé que pour la compatibilité et n'est pas envoyé, car la passerelle n'a pas ce champ.
+
 ```rust
 let result = dna.modify_privacy_protection_status("example.com", true, "Owner request");
 ```
@@ -733,7 +734,7 @@ let result = dna.save_contacts("example.com", &json!({
 
 #### Enregistrements de zone DNS
 
-La passerelle stocke les enregistrements sous forme d'**ensembles** (un nom + un type contenant une ou plusieurs valeurs). Écrire un ensemble remplace toutes ses valeurs, et supprimer n'importe quelle valeur supprime l'ensemble entier. Les méthodes `*_value` effectuent pour vous la lecture-fusion-écriture, afin qu'un panneau puisse traiter les enregistrements un par un. Les noms peuvent être relatifs (`www`), `@` / vides pour l'apex, ou pleinement qualifiés ; ils sont réduits au libellé relatif attendu par la passerelle. Types pris en charge : A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT. Les modifications sont appliquées immédiatement lorsque `apply` vaut `true` (valeur par défaut de php-dna) ; sinon appelez `apply_resource_records`. Les appels de zone sont espacés d'au moins une seconde car la passerelle limite les rafales.
+La passerelle stocke les enregistrements sous forme d'**ensembles** (un nom + un type contenant une ou plusieurs valeurs). Écrire un ensemble remplace toutes ses valeurs, et supprimer n'importe quelle valeur supprime l'ensemble entier. Les méthodes `*_value` effectuent pour vous la lecture-fusion-écriture, afin qu'un panneau puisse traiter les enregistrements un par un. Les noms peuvent être relatifs (`www`), `@` / vides pour l'apex, ou pleinement qualifiés ; ils sont réduits au libellé relatif attendu par la passerelle. Types pris en charge : A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT. Les modifications sont appliquées immédiatement lorsque `apply` vaut `true` (valeur par défaut de php-dna) ; sinon appelez `apply_resource_records`. Les appels de zone sont espacés d'au moins une seconde car la passerelle limite les rafales. Si l'application automatique échoue, la méthode renvoie l'erreur d'application (la modification reste en attente). Les résultats indiquent le type en majuscules et le TTL réellement envoyé (en dessous de 1 il devient 3600, au-dessus de 86400 il devient 86400).
 
 ```rust
 // List every record (one row per value; names come back as FQDNs)
@@ -812,7 +813,7 @@ let result = dna.delete_forwarding("example.com");
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org/landing", "ForwardType": "Frame"}}
 ```
 
-Si aucune redirection n'est configurée, `get_forwarding` renvoie `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`. `set_forwarding` renvoie `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`.
+Si aucune redirection n'est configurée (la passerelle répond `Redirect information not found`), `get_forwarding` renvoie `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}` ; tout autre échec, comme un domaine inexistant, est renvoyé comme une erreur. `set_forwarding` renvoie `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`. `delete_forwarding` renvoie `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`, ou `"Removed": false` si aucune redirection n'était configurée.
 
 </details>
 
@@ -822,7 +823,7 @@ Si aucune redirection n'est configurée, `get_forwarding` renvoie `{"result": "O
 
 ```rust
 let result = dna.get_reseller_details();
-let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
+let balance = dna.get_current_balance("USD"); // "USD" or "TRY"
 ```
 
 <details>
@@ -839,7 +840,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
   "symbol": "$",
   "balances": [
     {"balance": "601.64", "currency": "USD", "symbol": "$"},
-    {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+    {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
   ]
 }
 ```
@@ -859,7 +860,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
 }
 ```
 
-En cas d'échec, `OperationResult` vaut `"FAILED"`, `ErrorCode` contient le code (par ex. `"API_429"`) et `Balance` vaut `"0.00"`.
+Le compte indique les soldes en USD et en TRY ; toute autre devise (EUR, GBP, ...) échoue avec `ErrorCode` `"BALANCE"`. En cas d'échec, `OperationResult` vaut `"FAILED"`, `ErrorCode` contient le code (par ex. `"API_429"`) et `Balance` vaut `"0.00"`.
 
 </details>
 
@@ -884,14 +885,14 @@ let contact = dna.validate_contact(&json!({
 ```json
 {
   "FirstName": "Jo",
-  "Phone": "12025550100",
+  "Phone": "2025550100",
   "Country": "TR",
   "LastName": "Isimyok",
   "AddressLine1": "Addres yok",
   "City": "ISTANBUL",
-  "State": "ISTANBUL",
   "ZipCode": "34000",
-  "PhoneCountryCode": "90",
+  "PhoneCountryCode": "1",
+  "State": "ISTANBUL",
   "Fax": "",
   "FaxCountryCode": ""
 }
@@ -908,16 +909,17 @@ Chaque méthode réseau renvoie une valeur ; vérifiez `result` :
 ```rust
 let out = dna.get_details("missing.com");
 if out["result"] == "ERROR" {
-    println!("{}", out["error"]["Code"]);    // "API_404"
-    println!("{}", out["error"]["Message"]); // "The domain name you requested could not be found. ..."
+    println!("{}", out["error"]["Code"]);        // "API_404"
+    println!("{}", out["error"]["GatewayCode"]); // "Dna.DomainService:Domain:10007"
+    println!("{}", out["error"]["Message"]);     // "The domain name you requested could not be found. ..."
     println!("{}", out["error"]["Details"]);
 }
 ```
 
-- Les erreurs HTTP utilisent le code `API_<statut>` (`API_400`, `API_404`, `API_429`, `API_500`, ...). Un corps d'erreur vide devient un message lisible tel que `HTTP 429 - Too Many Requests`.
+- Les erreurs HTTP utilisent le code `API_<statut>` (`API_400`, `API_404`, `API_429`, `API_500`, ...). Un corps d'erreur vide devient un message lisible tel que `HTTP 429 - Too Many Requests`. Lorsque la passerelle a envoyé son propre code d'erreur, l'enveloppe le contient aussi dans `GatewayCode` (par ex. `"Dna.DomainService:Domain:10007"`).
 - Une réponse 301/302 signifie des identifiants erronés : `Invalid API credentials`.
 - Les erreurs de validation de la passerelle sont regroupées dans `Details` en nommant le champ, par ex. `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
-- Les pannes réseau sont des erreurs, jamais un succès vide. Un dépassement de délai donne `Could not reach the DomainNameAPI service: the connection timed out. (...)` ; les autres pannes donnent `Curl error during request: ...`. Le code de l'enveloppe est `API_<numéro d'erreur curl>` (`API_28` pour un délai dépassé, `API_6` pour le DNS, `API_7` pour une connexion refusée), et `get_parsed_response_data()["Code"]` contient `CURL_<n>`.
+- Les pannes réseau sont des erreurs, jamais un succès vide. Un dépassement de délai donne `Could not reach the DomainNameAPI service: the connection timed out. (...)` ; les autres pannes donnent `Curl error during request: ...`. Leur code est `CURL_<numéro d'erreur curl>` (`CURL_28` pour un délai dépassé, `CURL_6` pour le DNS, `CURL_7` pour une connexion refusée) ; `API_<n>` est réservé aux statuts HTTP.
 - La validation locale (type d'enregistrement non pris en charge, adresse de redirection manquante, aucun domaine à vérifier) échoue avant toute requête avec un code explicite (`ADD_ZONE`, `SET_FORWARD`, `AVAILABILITY`, ...).
 
 ### Diagnostic
@@ -962,7 +964,7 @@ La suite de tests ne nécessite ni réseau ni identifiants :
 cargo test
 ```
 
-Elle contient des tests unitaires pour la couche HTTP, la correspondance des erreurs, le masquage de la télémétrie et les utilitaires, ainsi qu'un test de conformité qui rejoue les 126 fixtures de php-dna depuis `tests/conformance/` et vérifie que chaque requête envoyée et chaque valeur de retour correspondent à php-dna.
+Elle contient des tests unitaires pour la couche HTTP, la correspondance des erreurs, le masquage de la télémétrie et les utilitaires, ainsi qu'un test de conformité qui rejoue les 134 fixtures de php-dna depuis `tests/conformance/` et vérifie que chaque requête envoyée et chaque valeur de retour correspondent à php-dna.
 
 ## Rapports d'erreurs (télémétrie)
 

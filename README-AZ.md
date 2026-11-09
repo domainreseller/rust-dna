@@ -12,7 +12,7 @@
 
 # rust-dna — Rust üçün DomainNameAPI müştərisi
 
-DomainNameAPI domen qeydiyyatçısının REST API-si üçün Rust müştərisi. Bu, istinad PHP kitabxanası [php-dna](https://github.com/domainreseller/php-dna)-nın sadiq portudur: eyni metodlar, şəbəkəyə gedən eyni sorğular və eyni qaytarılan dəyərlər. Hər port php-dna-nın 126 uyğunluq (conformance) ssenarisi ilə yoxlanılır.
+DomainNameAPI domen qeydiyyatçısının REST API-si üçün Rust müştərisi. Bu, istinad PHP kitabxanası [php-dna](https://github.com/domainreseller/php-dna)-nın sadiq portudur: eyni metodlar, şəbəkəyə gedən eyni sorğular və eyni qaytarılan dəyərlər. Hər port php-dna-nın 134 uyğunluq (conformance) ssenarisi ilə yoxlanılır.
 
 ## 📦 Yükləmə — həmişə Releases istifadə edin!
 
@@ -101,7 +101,7 @@ fn main() {
   - uğur: `{"result": "OK", "data": {...}}`
   - xəta: `{"result": "ERROR", "error": {"Code": "...", "Message": "...", "Details": "..."}}`
   - bir neçə metod php-dna-dan götürülmüş başqa zərf istifadə edir: `get_current_balance` `OperationResult` obyekti qaytarır, `check_availability` uğur halında sadə siyahı qaytarır, `get_reseller_details` sahələrini ən üst səviyyədə qaytarır.
-- **Xətalar atılmır, qaytarılır.** Gateway xətaları, HTTP xətaları və şəbəkə nasazlıqlarının hamısı xəta zərfi kimi qayıdır; heç nə panic yaratmır.
+- **Xətalar atılmır, qaytarılır.** Gateway xətaları, HTTP xətaları və şəbəkə nasazlıqlarının hamısı xəta zərfi kimi qayıdır; heç nə panic yaratmır. Qeydiyyat, transfer və yeniləmə gateway HTTP 200 ilə `success: false` cavabı verdikdə də xəta qaytarır.
 - **Strukturlaşdırılmış girişlər** (kontaktlar, nameserver siyahıları, filtrlər, TLD atributları, qeyd məzmunları) `json!` ilə yaradılan `&Value` dəyərləridir. Kontakt xəritələri php-dna-nın açarlarından istifadə edir (`FirstName`, `EMail`, `AddressLine1`, `PhoneCountryCode`, ...); həm düz, həm də iç-içə (`Address.Line1`, `Phone.Phone.Number`) kontakt formaları qəbul olunur. Nameserver siyahıları siyahı və ya xəritə ola bilər (dəyərlər istifadə olunur).
 - **Rust-da standart arqumentlər yoxdur.** Hər metod php-dna-nın tam arqument siyahısını eyni ardıcıllıqla qəbul edir. php-dna-nın standart dəyərləri sabitlər kimi ixrac olunur: `DEFAULT_TTL` (3600), `DEFAULT_REASON` ("Owner request"), `DEFAULT_FORWARD_TYPE` ("Standard"), `DEFAULT_CURRENCY` ("USD"), `DEFAULT_TLD_COUNT` (20), `DEFAULT_COMMAND` ("create"). Dörd isteğe bağlı arqumenti olan `register_with_contact_info` üçün əlavə olaraq `Default` dəyəri php-dna-nın standartları olan `RegisterOptions` strukturunu qəbul edən `register_with_contact_info_opts` də var.
 
@@ -236,11 +236,10 @@ let result = dna.renew("example.com", 1);
 
 #### Domen Transferi
 
+Transferlər heç vaxt kontakt məlumatı göndərmir: kontaktları qeydiyyatçı əvvəlki qeydiyyatçıdan təhvil alır, ona görə hər transfer sorğusu `contacts: []` daşıyır.
+
 ```rust
 let result = dna.transfer("example.com", "Xy9#mK2$", 3);
-
-// php-dna's facade sends no contacts with a transfer; to send them:
-let result = dna.transfer_with_contacts("example.com", "Xy9#mK2$", 3, &contacts);
 ```
 
 <details>
@@ -625,6 +624,8 @@ let result = dna.modify_child_name_server("example.com", "ns1.example.com", "1.2
 
 #### Domen Məxfiliyinin Dəyişdirilməsi
 
+`status` `bool` və ya panellərin saxladığı formada dəyərdir: `"1"`, `"on"`, `"true"`, `"yes"` və `1` aktiv deməkdir, qalan hər şey deaktiv. Səbəb (reason) arqumenti yalnız uyğunluq üçün saxlanılır və göndərilmir, çünki gateway-də belə sahə yoxdur.
+
 ```rust
 let result = dna.modify_privacy_protection_status("example.com", true, "Owner request");
 ```
@@ -733,7 +734,7 @@ let result = dna.save_contacts("example.com", &json!({
 
 #### DNS Zona Qeydləri
 
-Gateway qeydləri **dəstlər** şəklində saxlayır (bir və ya bir neçə dəyər daşıyan bir ad + tip). Dəsti yazmaq onun bütün dəyərlərini əvəz edir, istənilən dəyəri silmək isə bütün dəsti silir. `*_value` metodları oxu-birləşdir-yaz əməliyyatını sizin əvəzinizə edir ki, panel qeydləri bir-bir idarə edə bilsin. Adlar nisbi (`www`), apex üçün `@` / boş və ya tam ixtisaslı ola bilər; onlar gateway-in gözlədiyi nisbi etiketə endirilir. Dəstəklənən tiplər: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT. `apply` `true` olduqda (php-dna standartı) dəyişikliklər dərhal tətbiq olunur; əks halda `apply_resource_records` çağırın. Gateway sorğu partlayışlarını məhdudlaşdırdığı üçün zona çağırışları arasında ən azı bir saniyə saxlanılır.
+Gateway qeydləri **dəstlər** şəklində saxlayır (bir və ya bir neçə dəyər daşıyan bir ad + tip). Dəsti yazmaq onun bütün dəyərlərini əvəz edir, istənilən dəyəri silmək isə bütün dəsti silir. `*_value` metodları oxu-birləşdir-yaz əməliyyatını sizin əvəzinizə edir ki, panel qeydləri bir-bir idarə edə bilsin. Adlar nisbi (`www`), apex üçün `@` / boş və ya tam ixtisaslı ola bilər; onlar gateway-in gözlədiyi nisbi etiketə endirilir. Dəstəklənən tiplər: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT. `apply` `true` olduqda (php-dna standartı) dəyişikliklər dərhal tətbiq olunur; əks halda `apply_resource_records` çağırın. Gateway sorğu partlayışlarını məhdudlaşdırdığı üçün zona çağırışları arasında ən azı bir saniyə saxlanılır. Avtomatik tətbiq uğursuz olarsa, metod tətbiq xətasını qaytarır (dəyişiklik gözləmədə qalır). Nəticələr böyük hərflərə çevrilmiş tipi və həqiqətən göndərilən TTL-i bildirir (1-dən aşağı 3600, 86400-dən yuxarı 86400 olur).
 
 ```rust
 // List every record (one row per value; names come back as FQDNs)
@@ -812,7 +813,7 @@ let result = dna.delete_forwarding("example.com");
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org/landing", "ForwardType": "Frame"}}
 ```
 
-Yönləndirmə qurulmayıbsa, `get_forwarding` `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}` qaytarır. `set_forwarding` `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}` qaytarır.
+Yönləndirmə qurulmayıbsa (gateway `Redirect information not found` cavabı verir), `get_forwarding` `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}` qaytarır; domenin olmaması kimi digər bütün xətalar xəta kimi qaytarılır. `set_forwarding` `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}` qaytarır. `delete_forwarding` `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}` qaytarır, yönləndirmə qurulmayıbsa isə `"Removed": false`.
 
 </details>
 
@@ -822,7 +823,7 @@ Yönləndirmə qurulmayıbsa, `get_forwarding` `{"result": "OK", "data": {"Enabl
 
 ```rust
 let result = dna.get_reseller_details();
-let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
+let balance = dna.get_current_balance("USD"); // "USD" or "TRY"
 ```
 
 <details>
@@ -839,7 +840,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
   "symbol": "$",
   "balances": [
     {"balance": "601.64", "currency": "USD", "symbol": "$"},
-    {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+    {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
   ]
 }
 ```
@@ -859,7 +860,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
 }
 ```
 
-Xəta halında `OperationResult` `"FAILED"` olur, `ErrorCode` kodu saxlayır (məs. `"API_429"`) və `Balance` `"0.00"` olur.
+Hesab USD və TRY balanslarını bildirir; başqa istənilən valyuta (EUR, GBP, ...) `ErrorCode` `"BALANCE"` ilə uğursuz olur. Xəta halında `OperationResult` `"FAILED"` olur, `ErrorCode` kodu saxlayır (məs. `"API_429"`) və `Balance` `"0.00"` olur.
 
 </details>
 
@@ -884,14 +885,14 @@ let contact = dna.validate_contact(&json!({
 ```json
 {
   "FirstName": "Jo",
-  "Phone": "12025550100",
+  "Phone": "2025550100",
   "Country": "TR",
   "LastName": "Isimyok",
   "AddressLine1": "Addres yok",
   "City": "ISTANBUL",
-  "State": "ISTANBUL",
   "ZipCode": "34000",
-  "PhoneCountryCode": "90",
+  "PhoneCountryCode": "1",
+  "State": "ISTANBUL",
   "Fax": "",
   "FaxCountryCode": ""
 }
@@ -908,16 +909,17 @@ Hər şəbəkə metodu bir dəyər qaytarır; `result` sahəsini yoxlayın:
 ```rust
 let out = dna.get_details("missing.com");
 if out["result"] == "ERROR" {
-    println!("{}", out["error"]["Code"]);    // "API_404"
-    println!("{}", out["error"]["Message"]); // "The domain name you requested could not be found. ..."
+    println!("{}", out["error"]["Code"]);        // "API_404"
+    println!("{}", out["error"]["GatewayCode"]); // "Dna.DomainService:Domain:10007"
+    println!("{}", out["error"]["Message"]);     // "The domain name you requested could not be found. ..."
     println!("{}", out["error"]["Details"]);
 }
 ```
 
-- HTTP xətaları `API_<status>` kodundan istifadə edir (`API_400`, `API_404`, `API_429`, `API_500`, ...). Boş xəta gövdəsi `HTTP 429 - Too Many Requests` kimi oxunaqlı mesaja çevrilir.
+- HTTP xətaları `API_<status>` kodundan istifadə edir (`API_400`, `API_404`, `API_429`, `API_500`, ...). Boş xəta gövdəsi `HTTP 429 - Too Many Requests` kimi oxunaqlı mesaja çevrilir. Gateway öz xəta kodunu göndəribsə, zərf onu həm də `GatewayCode` kimi daşıyır (məs. `"Dna.DomainService:Domain:10007"`).
 - 301/302 cavabı səhv giriş məlumatları deməkdir: `Invalid API credentials`.
 - Gateway-in doğrulama xətaları sahənin adı göstərilməklə `Details` daxilində birləşdirilir, məs. `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
-- Şəbəkə nasazlıqları xətadır, heç vaxt boş uğur deyil. Vaxt aşımı `Could not reach the DomainNameAPI service: the connection timed out. (...)` kimi oxunur; digər nasazlıqlar `Curl error during request: ...` kimi oxunur. Zərf kodu `API_<curl xəta nömrəsi>`-dir (vaxt aşımı üçün `API_28`, DNS üçün `API_6`, rədd edilmiş bağlantı üçün `API_7`), `get_parsed_response_data()["Code"]` isə `CURL_<n>` dəyərini saxlayır.
+- Şəbəkə nasazlıqları xətadır, heç vaxt boş uğur deyil. Vaxt aşımı `Could not reach the DomainNameAPI service: the connection timed out. (...)` kimi oxunur; digər nasazlıqlar `Curl error during request: ...` kimi oxunur. Onların kodu `CURL_<curl xəta nömrəsi>`-dir (vaxt aşımı üçün `CURL_28`, DNS üçün `CURL_6`, rədd edilmiş bağlantı üçün `CURL_7`); `API_<n>` HTTP statusları üçün ayrılıb.
 - Yerli doğrulama (dəstəklənməyən qeyd tipi, çatışmayan yönləndirmə ünvanı, yoxlanılacaq domen olmaması) heç bir sorğudan əvvəl izahlı kodla uğursuz olur (`ADD_ZONE`, `SET_FORWARD`, `AVAILABILITY`, ...).
 
 ### Diaqnostika
@@ -962,7 +964,7 @@ Test paketi nə şəbəkə, nə də giriş məlumatları tələb edir:
 cargo test
 ```
 
-O, HTTP qatı, xətaların uyğunlaşdırılması, telemetriya maskalanması və köməkçi funksiyalar üçün vahid testləri, həmçinin `tests/conformance/` qovluğundakı 126 php-dna ssenarisinin hamısını yenidən oynadan və şəbəkəyə gedən hər sorğunun və hər qaytarılan dəyərin php-dna ilə eyni olduğunu yoxlayan uyğunluq testini ehtiva edir.
+O, HTTP qatı, xətaların uyğunlaşdırılması, telemetriya maskalanması və köməkçi funksiyalar üçün vahid testləri, həmçinin `tests/conformance/` qovluğundakı 134 php-dna ssenarisinin hamısını yenidən oynadan və şəbəkəyə gedən hər sorğunun və hər qaytarılan dəyərin php-dna ilə eyni olduğunu yoxlayan uyğunluq testini ehtiva edir.
 
 ## Xəta hesabatı (telemetriya)
 

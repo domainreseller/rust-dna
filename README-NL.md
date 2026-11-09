@@ -12,7 +12,7 @@
 
 # rust-dna — DomainNameAPI-client voor Rust
 
-Rust-client voor de REST-API van domeinregistrar DomainNameAPI. Het is een getrouwe port van de PHP-referentiebibliotheek [php-dna](https://github.com/domainreseller/php-dna): dezelfde methoden, dezelfde verzoeken over de lijn en dezelfde retourwaarden. Elke port wordt gecontroleerd met de 126 conformiteitsfixtures van php-dna.
+Rust-client voor de REST-API van domeinregistrar DomainNameAPI. Het is een getrouwe port van de PHP-referentiebibliotheek [php-dna](https://github.com/domainreseller/php-dna): dezelfde methoden, dezelfde verzoeken over de lijn en dezelfde retourwaarden. Elke port wordt gecontroleerd met de 134 conformiteitsfixtures van php-dna.
 
 ## 📦 Downloaden — gebruik altijd de Releases!
 
@@ -101,7 +101,7 @@ Elk voorbeeld in [examples/](examples) draait met `cargo run --example <naam>`, 
   - succes: `{"result": "OK", "data": {...}}`
   - fout: `{"result": "ERROR", "error": {"Code": "...", "Message": "...", "Details": "..."}}`
   - enkele methoden gebruiken een andere envelop, overgenomen van php-dna: `get_current_balance` geeft een `OperationResult`-object terug, `check_availability` geeft bij succes een kale lijst terug, `get_reseller_details` geeft zijn velden op het hoogste niveau terug.
-- **Fouten worden teruggegeven, nooit gegooid.** Gatewayfouten, HTTP-fouten en netwerkstoringen komen allemaal terug als foutenvelop; niets veroorzaakt een panic.
+- **Fouten worden teruggegeven, nooit gegooid.** Gatewayfouten, HTTP-fouten en netwerkstoringen komen allemaal terug als foutenvelop; niets veroorzaakt een panic. Registratie, overdracht en verlenging geven ook een fout terug wanneer de gateway antwoordt met HTTP 200 en `success: false`.
 - **Gestructureerde invoer** (contacten, nameserverlijsten, filters, TLD-attributen, recordinhoud) is een `&Value`, opgebouwd met `json!`. Contactmaps gebruiken de sleutels van php-dna (`FirstName`, `EMail`, `AddressLine1`, `PhoneCountryCode`, ...); zowel de platte als de geneste vorm (`Address.Line1`, `Phone.Phone.Number`) wordt geaccepteerd. Nameserverlijsten mogen een lijst of een map zijn (de waarden worden gebruikt).
 - **Geen standaardargumenten in Rust.** Elke methode neemt de volledige argumentenlijst van php-dna in dezelfde volgorde. De standaardwaarden van php-dna worden als constanten geëxporteerd: `DEFAULT_TTL` (3600), `DEFAULT_REASON` ("Owner request"), `DEFAULT_FORWARD_TYPE` ("Standard"), `DEFAULT_CURRENCY` ("USD"), `DEFAULT_TLD_COUNT` (20), `DEFAULT_COMMAND` ("create"). Voor `register_with_contact_info`, dat vier optionele argumenten heeft, bestaat ook `register_with_contact_info_opts`, dat een `RegisterOptions`-struct aanneemt waarvan `Default` de standaardwaarden van php-dna zijn.
 
@@ -236,11 +236,10 @@ let result = dna.renew("example.com", 1);
 
 #### Domeinoverdracht
 
+Overdrachten sturen nooit contactgegevens mee: de registrar neemt de contacten over van de vorige registrar, dus elk overdrachtsverzoek bevat `contacts: []`.
+
 ```rust
 let result = dna.transfer("example.com", "Xy9#mK2$", 3);
-
-// php-dna's facade sends no contacts with a transfer; to send them:
-let result = dna.transfer_with_contacts("example.com", "Xy9#mK2$", 3, &contacts);
 ```
 
 <details>
@@ -625,6 +624,8 @@ let result = dna.modify_child_name_server("example.com", "ns1.example.com", "1.2
 
 #### Domeinprivacy wijzigen
 
+`status` is een `bool` of een waarde zoals panelen die opslaan: `"1"`, `"on"`, `"true"`, `"yes"` en `1` betekenen aan, al het andere uit. Het argument voor de reden (reason) blijft alleen bestaan voor compatibiliteit en wordt niet verstuurd, omdat de gateway zo'n veld niet kent.
+
 ```rust
 let result = dna.modify_privacy_protection_status("example.com", true, "Owner request");
 ```
@@ -733,7 +734,7 @@ let result = dna.save_contacts("example.com", &json!({
 
 #### DNS-zonerecords
 
-De gateway slaat records op als **sets** (één naam + type met één of meer waarden). Een set schrijven vervangt al zijn waarden, en het verwijderen van een willekeurige waarde verwijdert de hele set. De `*_value`-methoden doen het lezen-samenvoegen-schrijven voor u, zodat een paneel records één voor één kan behandelen. Namen mogen relatief zijn (`www`), `@` / leeg voor de apex, of volledig gekwalificeerd; ze worden teruggebracht tot het relatieve label dat de gateway verwacht. Ondersteunde types: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT. Wijzigingen worden direct toegepast wanneer `apply` `true` is (standaard van php-dna); roep anders `apply_resource_records` aan. Zone-aanroepen liggen minstens één seconde uit elkaar, omdat de gateway pieken in verzoeken beperkt.
+De gateway slaat records op als **sets** (één naam + type met één of meer waarden). Een set schrijven vervangt al zijn waarden, en het verwijderen van een willekeurige waarde verwijdert de hele set. De `*_value`-methoden doen het lezen-samenvoegen-schrijven voor u, zodat een paneel records één voor één kan behandelen. Namen mogen relatief zijn (`www`), `@` / leeg voor de apex, of volledig gekwalificeerd; ze worden teruggebracht tot het relatieve label dat de gateway verwacht. Ondersteunde types: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT. Wijzigingen worden direct toegepast wanneer `apply` `true` is (standaard van php-dna); roep anders `apply_resource_records` aan. Zone-aanroepen liggen minstens één seconde uit elkaar, omdat de gateway pieken in verzoeken beperkt. Als het automatisch toepassen mislukt, geeft de methode de fout van het toepassen terug (de wijziging blijft klaargezet). Resultaten melden het type in hoofdletters en de TTL die echt is verstuurd (onder 1 wordt 3600, boven 86400 wordt 86400).
 
 ```rust
 // List every record (one row per value; names come back as FQDNs)
@@ -812,7 +813,7 @@ let result = dna.delete_forwarding("example.com");
 {"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org/landing", "ForwardType": "Frame"}}
 ```
 
-Als er geen doorverwijzing is ingesteld, geeft `get_forwarding` `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}` terug. `set_forwarding` geeft `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}` terug.
+Als er geen doorverwijzing is ingesteld (de gateway antwoordt `Redirect information not found`), geeft `get_forwarding` `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}` terug; elke andere fout, zoals een niet-bestaand domein, wordt als fout teruggegeven. `set_forwarding` geeft `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}` terug. `delete_forwarding` geeft `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}` terug, of `"Removed": false` als er geen doorverwijzing was ingesteld.
 
 </details>
 
@@ -822,7 +823,7 @@ Als er geen doorverwijzing is ingesteld, geeft `get_forwarding` `{"result": "OK"
 
 ```rust
 let result = dna.get_reseller_details();
-let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
+let balance = dna.get_current_balance("USD"); // "USD" or "TRY"
 ```
 
 <details>
@@ -839,7 +840,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
   "symbol": "$",
   "balances": [
     {"balance": "601.64", "currency": "USD", "symbol": "$"},
-    {"balance": "1250.5", "currency": "TL", "symbol": "TL"}
+    {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
   ]
 }
 ```
@@ -859,7 +860,7 @@ let balance = dna.get_current_balance("USD"); // "USD", "TRY", "EUR" or "GBP"
 }
 ```
 
-Bij een fout is `OperationResult` `"FAILED"`, bevat `ErrorCode` de code (bijv. `"API_429"`) en is `Balance` `"0.00"`.
+Het account meldt saldi in USD en TRY; elke andere valuta (EUR, GBP, ...) mislukt met `ErrorCode` `"BALANCE"`. Bij een fout is `OperationResult` `"FAILED"`, bevat `ErrorCode` de code (bijv. `"API_429"`) en is `Balance` `"0.00"`.
 
 </details>
 
@@ -884,14 +885,14 @@ let contact = dna.validate_contact(&json!({
 ```json
 {
   "FirstName": "Jo",
-  "Phone": "12025550100",
+  "Phone": "2025550100",
   "Country": "TR",
   "LastName": "Isimyok",
   "AddressLine1": "Addres yok",
   "City": "ISTANBUL",
-  "State": "ISTANBUL",
   "ZipCode": "34000",
-  "PhoneCountryCode": "90",
+  "PhoneCountryCode": "1",
+  "State": "ISTANBUL",
   "Fax": "",
   "FaxCountryCode": ""
 }
@@ -908,16 +909,17 @@ Elke netwerkmethode geeft een waarde terug; controleer `result`:
 ```rust
 let out = dna.get_details("missing.com");
 if out["result"] == "ERROR" {
-    println!("{}", out["error"]["Code"]);    // "API_404"
-    println!("{}", out["error"]["Message"]); // "The domain name you requested could not be found. ..."
+    println!("{}", out["error"]["Code"]);        // "API_404"
+    println!("{}", out["error"]["GatewayCode"]); // "Dna.DomainService:Domain:10007"
+    println!("{}", out["error"]["Message"]);     // "The domain name you requested could not be found. ..."
     println!("{}", out["error"]["Details"]);
 }
 ```
 
-- HTTP-fouten gebruiken de code `API_<status>` (`API_400`, `API_404`, `API_429`, `API_500`, ...). Een lege foutbody wordt een leesbare melding zoals `HTTP 429 - Too Many Requests`.
+- HTTP-fouten gebruiken de code `API_<status>` (`API_400`, `API_404`, `API_429`, `API_500`, ...). Een lege foutbody wordt een leesbare melding zoals `HTTP 429 - Too Many Requests`. Als de gateway een eigen foutcode heeft gestuurd, bevat de envelop die ook als `GatewayCode` (bijv. `"Dna.DomainService:Domain:10007"`).
 - Een 301/302-antwoord betekent onjuiste inloggegevens: `Invalid API credentials`.
 - Validatiefouten van de gateway worden samengevoegd in `Details`, met de naam van het veld, bijv. `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
-- Netwerkstoringen zijn fouten, nooit een leeg succes. Een time-out luidt `Could not reach the DomainNameAPI service: the connection timed out. (...)`; andere storingen luiden `Curl error during request: ...`. De envelopcode is `API_<curl-foutnummer>` (`API_28` bij een time-out, `API_6` bij DNS, `API_7` bij een geweigerde verbinding), en `get_parsed_response_data()["Code"]` bevat `CURL_<n>`.
+- Netwerkstoringen zijn fouten, nooit een leeg succes. Een time-out luidt `Could not reach the DomainNameAPI service: the connection timed out. (...)`; andere storingen luiden `Curl error during request: ...`. Hun code is `CURL_<curl-foutnummer>` (`CURL_28` bij een time-out, `CURL_6` bij DNS, `CURL_7` bij een geweigerde verbinding); `API_<n>` is gereserveerd voor HTTP-statussen.
 - Lokale validatie (niet-ondersteund recordtype, ontbrekend doorverwijzingsadres, geen domeinen om te controleren) faalt vóór enig verzoek met een beschrijvende code (`ADD_ZONE`, `SET_FORWARD`, `AVAILABILITY`, ...).
 
 ### Diagnose
@@ -962,7 +964,7 @@ De testsuite heeft geen netwerk en geen inloggegevens nodig:
 cargo test
 ```
 
-Ze bevat unittests voor de HTTP-laag, de foutvertaling, het maskeren van telemetrie en de hulpfuncties, plus een conformiteitstest die alle 126 php-dna-fixtures uit `tests/conformance/` afspeelt en controleert dat elk verzonden verzoek en elke retourwaarde overeenkomt met php-dna.
+Ze bevat unittests voor de HTTP-laag, de foutvertaling, het maskeren van telemetrie en de hulpfuncties, plus een conformiteitstest die alle 134 php-dna-fixtures uit `tests/conformance/` afspeelt en controleert dat elk verzonden verzoek en elke retourwaarde overeenkomt met php-dna.
 
 ## Foutrapportage (telemetrie)
 
