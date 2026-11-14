@@ -1,6 +1,6 @@
 [package]
 name = "domainnameapi"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 rust-version = "1.83"
 description = "Rust client for the DomainNameAPI domain-registrar REST API (faithful port of php-dna)"

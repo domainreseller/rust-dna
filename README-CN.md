@@ -34,7 +34,7 @@ DomainNameAPI 域名注册商 REST API 的 Rust 客户端。它是参考 PHP 库
 
 ```toml
 [dependencies]
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.0" }
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.1" }
 ```
 
 **B) 下载的 release 包**
@@ -969,8 +969,6 @@ cargo test
 ## 错误报告（遥测）
 
 当 API 调用失败时，本库可以向 DomainNameAPI 自有的错误跟踪系统（Sentry）发送错误报告。成功调用中的一小部分随机样本（4%，外加所有耗时超过 1 秒的调用）会作为性能记录发送。这有助于 DomainNameAPI 发现并修复问题。错误报告**默认开启**。
-
-> ℹ️ 在 1.0.0 版本中，Rust 库的 Sentry 项目尚未创建，因此内置的 DSN 为空，不会发送任何内容。以下行为在配置 DSN 后（或您通过 `set_telemetry_dsn` 自行设置 DSN 时）生效。
 
 **发送的内容：**
 

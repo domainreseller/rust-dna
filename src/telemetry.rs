@@ -3,8 +3,8 @@
 //!
 //! Errors are posted to Sentry's store endpoint from a background thread
 //! (fire and forget: never blocks or fails the caller). Only credentials are
-//! masked; everything else is sent, as in php-dna. With an empty DSN (the
-//! default for now) telemetry is a no-op.
+//! masked; everything else is sent, as in php-dna. With an empty DSN
+//! telemetry is a no-op.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
@@ -17,8 +17,10 @@ use serde_json::{json, Map, Value};
 use crate::php;
 use crate::{APPLICATION, VERSION};
 
-/// Sentry DSN for DomainNameAPI-Rust. Filled in when the Sentry project for this port exists.
-pub const DEFAULT_SENTRY_DSN: &str = "";
+/// DomainNameAPI's Sentry project for rust-dna (DomainNameAPI-Rust).
+/// `set_error_reporting_enabled(false)` turns reporting off.
+pub const DEFAULT_SENTRY_DSN: &str =
+    "https://89d7a6173f8de46d953bf383ebb8e5d1@sentry.atakdomain.com/22";
 
 /// Share of successful calls sent as performance records, out of 1000 (4%).
 pub const PERFORMANCE_SAMPLE_RATE: u64 = 40;
@@ -139,7 +141,12 @@ impl Default for Telemetry {
         Self {
             enabled: true,
             minimal: false,
-            dsn: DEFAULT_SENTRY_DSN.to_string(),
+            // The library's own unit tests never talk to the real project.
+            dsn: if cfg!(test) {
+                String::new()
+            } else {
+                DEFAULT_SENTRY_DSN.to_string()
+            },
             session_trace_id: None,
         }
     }
@@ -921,6 +928,40 @@ mod tests {
         assert_eq!(event["extra"]["response_data"], json!({"http_code": 500}));
         assert!(event["tags"].get("domain").is_none());
         assert!(event["tags"].get("ip_address").is_none());
+    }
+
+    #[test]
+    fn default_dsn_is_the_rust_dna_project() {
+        assert_eq!(
+            DEFAULT_SENTRY_DSN,
+            "https://89d7a6173f8de46d953bf383ebb8e5d1@sentry.atakdomain.com/22"
+        );
+        let d = Dsn::parse(DEFAULT_SENTRY_DSN).unwrap();
+        assert_eq!(d.store_url, "https://sentry.atakdomain.com/api/22/store/");
+        assert_eq!(d.public_key, "89d7a6173f8de46d953bf383ebb8e5d1");
+        assert!(d.secret_key.is_none());
+    }
+
+    #[test]
+    fn unit_tests_never_use_the_real_dsn() {
+        let t = Telemetry::default();
+        assert!(t.enabled);
+        assert_eq!(t.dsn, "");
+    }
+
+    #[test]
+    fn empty_dsn_is_a_noop() {
+        let mut t = Telemetry {
+            enabled: true,
+            minimal: false,
+            dsn: String::new(),
+            session_trace_id: None,
+        };
+        assert!(Dsn::parse(&t.dsn).is_none());
+        t.report_error("boom", 500, &ctx());
+        // Slow call: always sampled, but with no DSN nothing is built or sent.
+        t.sample_success(5_000.0, 1_700_000_000.0, &ctx());
+        assert!(t.session_trace_id.is_none());
     }
 
     #[test]

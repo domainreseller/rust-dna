@@ -34,7 +34,7 @@ DomainNameAPI alan adı kayıt REST API'si için Rust istemcisi. Referans PHP k�
 
 ```toml
 [dependencies]
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.0" }
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.1" }
 ```
 
 **B) İndirilen release paketi**
@@ -969,8 +969,6 @@ HTTP katmanı, hata eşleme, telemetri maskeleme ve yardımcı araçlar için bi
 ## Hata raporlama (telemetri)
 
 Bir API çağrısı başarısız olduğunda kütüphane, DomainNameAPI'nin kendi hata izleme sistemine (Sentry) bir hata raporu gönderebilir. Başarılı çağrıların küçük ve rastgele bir bölümü (%4, ayrıca 1 saniyeden yavaş her çağrı) performans kaydı olarak gönderilir. Bu, DomainNameAPI'nin sorunları bulup düzeltmesine yardımcı olur. Hata raporlama **varsayılan olarak açıktır**.
-
-> ℹ️ 1.0.0 sürümünde Rust kütüphanesi için Sentry projesi henüz oluşturulmadığından yerleşik DSN boştur ve hiçbir şey gönderilmez. Aşağıdaki davranış, DSN yapılandırıldığında (veya `set_telemetry_dsn` ile kendiniz bir DSN ayarladığınızda) geçerlidir.
 
 **Gönderilenler:**
 

@@ -34,7 +34,7 @@ DomainNameAPI domen qeydiyyatçısının REST API-si üçün Rust müştərisi. 
 
 ```toml
 [dependencies]
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.0" }
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.1" }
 ```
 
 **B) Yüklənmiş release**
@@ -969,8 +969,6 @@ O, HTTP qatı, xətaların uyğunlaşdırılması, telemetriya maskalanması və
 ## Xəta hesabatı (telemetriya)
 
 API çağırışı uğursuz olduqda kitabxana DomainNameAPI-nin öz xəta izləmə sisteminə (Sentry) xəta hesabatı göndərə bilər. Uğurlu çağırışların kiçik təsadüfi hissəsi (4%, üstəlik 1 saniyədən yavaş hər çağırış) performans qeydi kimi göndərilir. Bu, DomainNameAPI-yə problemləri tapıb düzəltməyə kömək edir. Xəta hesabatı **standart olaraq aktivdir**.
-
-> ℹ️ 1.0.0 versiyasında Rust kitabxanası üçün Sentry layihəsi hələ yaradılmayıb, ona görə daxili DSN boşdur və heç nə göndərilmir. Aşağıdakı davranış DSN quraşdırıldıqdan sonra (və ya `set_telemetry_dsn` ilə özünüz DSN təyin etdikdə) qüvvəyə minir.
 
 **Nə göndərilir:**
 

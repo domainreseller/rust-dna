@@ -34,7 +34,7 @@ Rust client for the DomainNameAPI domain registrar REST API. It is a faithful po
 
 ```toml
 [dependencies]
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.0" }
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.1" }
 ```
 
 **B) Downloaded release**
@@ -969,8 +969,6 @@ It contains unit tests for the HTTP layer, error mapping, telemetry masking and 
 ## Error reporting (telemetry)
 
 When an API call fails, the library can send an error report to DomainNameAPI's own error tracker (Sentry). A small random share of successful calls (4%, plus every call slower than 1 second) is sent as a performance record. This helps DomainNameAPI find and fix problems. Error reporting is **on by default**.
-
-> ℹ️ In version 1.0.0 the Sentry project for the Rust library does not exist yet, so the built-in DSN is empty and nothing is sent. The behaviour below applies once it is configured (or if you set a DSN yourself with `set_telemetry_dsn`).
 
 **What is sent:**
 

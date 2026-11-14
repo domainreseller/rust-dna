@@ -35,7 +35,7 @@ fn sends_required_headers() {
     assert_eq!(header(req, "X-API-KEY").as_deref(), Some(common::API_KEY));
     assert_eq!(header(req, "__reseller").as_deref(), Some(common::RESELLER));
     assert_eq!(header(req, "User-Agent").as_deref(), Some(USER_AGENT));
-    assert_eq!(USER_AGENT, "DomainNameAPI-Rust/1.0.0");
+    assert_eq!(USER_AGENT, "DomainNameAPI-Rust/1.0.1");
     assert_eq!(req.timeout, Duration::from_secs(30));
     assert_eq!(req.connect_timeout, Duration::from_secs(10));
     assert!(req.verify_tls);
@@ -96,6 +96,7 @@ fn credentials_are_trimmed_and_test_mode_parsed() {
     let mut dna = DomainNameApi::new("  reseller \n", "\tkey ", false);
     let t = common::FakeTransport::new(vec![Reply::Http(200, "{}".into())]);
     dna.set_error_reporting_enabled(false);
+    dna.set_telemetry_dsn("");
     dna.set_transport(Box::new(t.clone()));
     dna.get_details("example.com");
     let req = &t.requests()[0];
@@ -384,6 +385,7 @@ fn serve_once(
 fn real_client(url: &str) -> DomainNameApi {
     let mut dna = DomainNameApi::new(common::RESELLER, common::API_KEY, false);
     dna.set_error_reporting_enabled(false);
+    dna.set_telemetry_dsn("");
     dna.set_service_url(url);
     dna
 }
@@ -405,7 +407,7 @@ fn ureq_transport_sends_headers_and_parses_success() {
         "{raw}"
     );
     assert!(
-        lower.contains("user-agent: domainnameapi-rust/1.0.0"),
+        lower.contains("user-agent: domainnameapi-rust/1.0.1"),
         "{raw}"
     );
     assert!(lower.contains("x-api-key: conformance-api-key"), "{raw}");

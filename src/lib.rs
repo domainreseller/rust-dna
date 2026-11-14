@@ -48,14 +48,14 @@ pub use serde_json::{json, Value};
 pub use transport::{HttpRequest, HttpResponse, Transport, TransportError, UreqTransport};
 
 /// Library version.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.0.1";
 
 /// Application name used in telemetry tags.
 pub const APPLICATION: &str = "DomainNameAPI-Rust";
 
 /// User-Agent sent with every request. Required: Cloudflare in front of the
 /// gateway rejects default client agents with error 1010.
-pub const USER_AGENT: &str = "DomainNameAPI-Rust/1.0.0";
+pub const USER_AGENT: &str = "DomainNameAPI-Rust/1.0.1";
 
 /// Live gateway.
 pub const URL_PROD: &str = "https://api.domainresellerapi.com/api/v1";

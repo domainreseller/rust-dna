@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-11-14
+
+### Changed
+
+- Error reporting now has its own Sentry project: the built-in default DSN points to the rust-dna project, so telemetry is active by default as documented.
+- Turn it off with `set_error_reporting_enabled(false)`; a DSN set with `set_telemetry_dsn` still overrides the default.
+
 ## [1.0.0] - 2026-11-09
 
 ### Added
@@ -37,4 +44,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Conformance test replaying all 134 php-dna fixtures, plus unit tests for the HTTP layer, error mapping, telemetry and utilities.
 - README in English with translations in Turkish, German, French, Italian, Dutch, Azerbaijani, Arabic and Simplified Chinese.
 
+[1.0.1]: https://github.com/domainreseller/rust-dna/releases/tag/v1.0.1
 [1.0.0]: https://github.com/domainreseller/rust-dna/releases/tag/v1.0.0

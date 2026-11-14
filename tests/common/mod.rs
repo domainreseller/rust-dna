@@ -71,11 +71,13 @@ impl Transport for FakeTransport {
     }
 }
 
-/// A client wired to a fake transport, telemetry off, no zone pacing.
+/// A client wired to a fake transport, telemetry off (and its DSN emptied,
+/// so the suite can never reach the real Sentry project), no zone pacing.
 pub fn client(replies: Vec<Reply>) -> (DomainNameApi, FakeTransport) {
     let transport = FakeTransport::new(replies);
     let mut dna = DomainNameApi::new(RESELLER, API_KEY, false);
     dna.set_error_reporting_enabled(false);
+    dna.set_telemetry_dsn("");
     dna.set_zone_min_interval(std::time::Duration::ZERO);
     dna.set_service_url(BASE_URL);
     dna.set_transport(Box::new(transport.clone()));
