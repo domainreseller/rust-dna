@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-23
+
+A new SDK, modelled on the [`dna` CLI](https://github.com/domainreseller/cli) and built from the same API document.
+1.x was a port of the PHP library; 2.0 is not compatible with it. See "Upgrading from 1.x" in the README.
+
+### Added
+
+- Typed area clients for all 67 operations of the REST API: `account()`, `contacts()`, `domains()` (with
+  `forwarding()`, `child_name_servers()` and `documents()`), `dns()`, `dnssec()`, `ssl()`, `hosting()`, `orders()` and
+  `products()`. DNSSEC, SSL certificates (purchase, configure, list, renew, reissue, revoke), hosting, orders,
+  products, contact handles, registry documents, auth codes, restores, the reseller profile and the transaction
+  ledger are new.
+- One request type per operation, named after its CLI command (`dna domain renew-check` is
+  `DomainRenewCheckRequest`), all implementing the public `Request` trait (`endpoint()`, and default `query()`,
+  `body()` and `validate()`); list requests also implement `PagedRequest`. Implement `Request` for endpoints the SDK
+  does not cover; `Client::send` sends any request, `send_with_response` also returns the correlation ID, the
+  soft-quota state, the number of attempts and the duration.
+- Documented serde models for every answer and enums for coded values (`DomainStatus`, `TransactionType`,
+  `DnssecAlgorithm`, ...) with an `Unknown(n)` fallback, plus open text enums (`RecordType`, `ContactType`,
+  `ForwardType`, ...) with `Other(text)`. Reading is lenient: numbers and booleans as text, dates with or without an
+  offset, `null` lists, unknown values. Requests are strict and are checked before anything is sent.
+- Async client on Tokio and `reqwest` (rustls, no OpenSSL). `Client` is `Clone + Send + Sync`; `list_all` methods
+  return a lazy `Stream` of items.
+- Every request declares an `OperationSafety` (`Read`, `Write`, `Billable`, `Destructive`), the same classes the CLI
+  uses. Read-only mode blocks everything but reads before it is sent.
+- Retries like the CLI: 429 always (honouring `Retry-After`), network errors and 502/503/504 only for reads and
+  idempotent writes, so a billable request is never sent twice. Client-side pacing keeps requests under the
+  gateway's rate limits.
+- One `Error` type with a stable `kind()` (the CLI's kinds), the API's error `code()`, validation errors,
+  correlation ID, hint, `is_retryable()` and `is_outcome_unknown()`; common codes in `domainnameapi::codes`.
+- `Client::new`, `Client::builder()` and `Client::from_env()`, which reads the CLI's variables (`DNA_RESELLER_ID`,
+  `DNA_API_KEY`, `DNA_ENV`, `DNA_TEST_MODE`, `DNA_BASE_URL`, `DNA_READ_ONLY`). A custom `reqwest::Client` is accepted.
+- Helpers: `DomainContacts::same`, `ContactHandles::same`, `DsData` parsing, `DocumentUpload::from_file`,
+  `CertificateContent::full_chain`, `Tld::register_price`, `ProductsClient::tld`, `dns::fqdn`.
+- SSL certificates are addressed by their certificate ID (a GUID), as the API requires since 2026-11-20; a domain
+  name passed as an ID is refused before sending.
+- Tests against a local fake API, and a spec coverage test that checks every operation of the API document has one
+  request type with the CLI's method, path, safety class and idempotency, and sends only documented parameters and
+  body properties.
+- `AGENTS.md` with the rules for contributors and AI coding agents; README in nine languages.
+
+### Changed
+
+- `"success": false` answers with HTTP 200 (register, renew, transfer, SSL operations, contact creation) are returned
+  as they are, like the Java SDK; check the `success` field.
+- MSRV stays 1.83; CI runs fmt, clippy and the tests on 1.83 and on stable.
+- User-Agent is `DomainNameAPI-Rust/2.0.0 (+https://github.com/domainreseller/rust-dna)`.
+
+### Removed
+
+- The php-dna compatible API (`DomainNameApi` with `serde_json::Value` envelopes, the `Transport` trait, the `php`
+  helpers, `ureq`) and the php-dna conformance fixtures.
+- Sentry error reporting. The SDK sends nothing anywhere except to the API.
+
 ## [1.0.1] - 2026-11-14
 
 ### Changed
@@ -44,5 +98,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Conformance test replaying all 134 php-dna fixtures, plus unit tests for the HTTP layer, error mapping, telemetry and utilities.
 - README in English with translations in Turkish, German, French, Italian, Dutch, Azerbaijani, Arabic and Simplified Chinese.
 
+[2.0.0]: https://github.com/domainreseller/rust-dna/releases/tag/v2.0.0
 [1.0.1]: https://github.com/domainreseller/rust-dna/releases/tag/v1.0.1
 [1.0.0]: https://github.com/domainreseller/rust-dna/releases/tag/v1.0.0

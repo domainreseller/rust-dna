@@ -10,1094 +10,901 @@
   <a href="README-IT.md"> | IT <img style="padding-top: 8px" src="https://raw.githubusercontent.com/yammadev/flag-icons/master/png/IT.png" alt="IT" height="20" /></a>
 </div>
 
-# rust-dna — عميل DomainNameAPI للغة Rust
+<div dir="rtl">
 
-عميل بلغة Rust لواجهة REST البرمجية الخاصة بمسجّل النطاقات DomainNameAPI. وهو نقل أمين لمكتبة PHP المرجعية [php-dna](https://github.com/domainreseller/php-dna): الدوال نفسها، والطلبات نفسها المرسلة عبر الشبكة، والقيم المُعادة نفسها. يُتحقَّق من كل نسخة منقولة مقابل 134 حالة توافق (conformance fixtures) من php-dna.
+# حزمة DomainNameAPI لـ Rust (rust-dna)
 
-## 📦 التنزيل — استخدم دائمًا صفحة الإصدارات (Releases)!
+</div>
 
-⬇️ **احصل على أحدث إصدار مُختبَر من هنا: https://github.com/domainreseller/rust-dna/releases/latest**
+<p>
+  <a href="https://github.com/domainreseller/rust-dna/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/domainreseller/rust-dna/ci.yml?branch=main&label=CI&style=flat-square" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-0B8DB5?style=flat-square" alt="Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/Rust-1.83%2B-0B8DB5?style=flat-square" alt="Rust 1.83+">
+</p>
 
-> ⚠️ **لا** تستخدم الزر الأخضر **Code → Download ZIP** — فهو ينزّل فرع التطوير الخام. حزم الإصدارات مرقّمة ومُختبَرة وجاهزة للإنتاج.
+<div dir="rtl">
 
-## دليل التثبيت والتكامل
+حزمة SDK الرسمية لـ Rust الخاصة بمنصة الموزّعين [Domain Name API](https://www.domainnameapi.com). تغطي جميع عمليات REST API
+البالغ عددها 67 عملية بطلبات ونماذج مكتوبة بأنواع صريحة: النطاقات، وجهات الاتصال، وDNS، وDNSSEC، وشهادات SSL،
+والاستضافة، والطلبات، والمنتجات، وحسابك.
 
-### الحد الأدنى من المتطلبات
-
-- Rust 1.83 أو أحدث (إصدار 2021)
-- لا حاجة إلى بيئة تشغيل غير متزامنة: الواجهة البرمجية حاجبة (blocking)
-- اعتماديات التشغيل: `ureq` (HTTP مع TLS عبر rustls) و`rustls` و`serde_json`. لا حاجة إلى OpenSSL.
-
-### التثبيت
-
-**أ) اعتمادية Git (مثبّتة على وسم إصدار)**
-
-```toml
-[dependencies]
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.1" }
-```
-
-**ب) إصدار مُنزَّل**
-
-فكّ ضغط أرشيف الإصدار بجوار مشروعك ووجّه Cargo إليه:
-
-```toml
-[dependencies]
-domainnameapi = { path = "../rust-dna" }
-```
-
-تعيد الحزمة (crate) تصدير `serde_json::Value` والماكرو `json!`، لذا لا تحتاج إلى إضافة `serde_json` بنفسك (ويمكنك ذلك إن شئت).
-
-## 🔑 بيانات اعتماد API — Reseller ID و API Key
-
-تتواصل المكتبة مع واجهة REST الخاصة بـ DomainNameAPI وتحتاج إلى بيانَي اعتماد اثنين بالضبط، يُمرَّران إلى المُنشئ:
-
-| المعامل | القيمة |
-|---|---|
-| الأول | Reseller ID — معرّف UUID مثل `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
-| الثاني | API Key |
-
-> 💡 تجد **Reseller ID** و**API Key** في لوحة تحكم DomainNameAPI ضمن **إعدادات API**.
-> ⚠️ هذه **بيانات اعتماد API** — بيانات تسجيل الدخول إلى اللوحة **لن** تعمل هنا.
+</div>
 
 ```rust
-use domainnameapi::DomainNameApi;
+let client = Client::builder().credentials(reseller_id, api_key).environment(Environment::Ote).build()?;
 
-let reseller_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
-let api_key = "your-api-key";
-
-// Live environment
-let mut dna = DomainNameApi::new(reseller_id, api_key, false);
-
-// Test (OTE) environment
-let mut dna = DomainNameApi::new(reseller_id, api_key, true);
+let search = client.domains().search("example.com").await?;
+if search.info.is_available() {
+    let request = DomainRegisterWithContactsRequest::new("example.com", DomainContacts::same(contact), ["tr.apiname.com", "eu.apiname.com"]);
+    client.domains().register_with_contacts(request).await?;
+}
 ```
 
-تُزال المسافات من بداية ونهاية بيانَي الاعتماد. يقبل المعامل الثالث أيضًا نصوصًا، لأن لوحات التحكم كثيرًا ما تخزّن مربعات الاختيار كنص: `"true"` و`"1"` و`"on"` و`"yes"` (دون تمييز حالة الأحرف) تختار بيئة الاختبار، وأي قيمة أخرى (بما فيها `"false"` و`"off"`) تختار البيئة الحية.
+<div dir="rtl">
+
+- **كل شيء مكتوب بأنواع صريحة.** كل عملية هي نوع طلب، وكل إجابة هي بنية (struct) مزوّدة بالتوثيق. لا خرائط (maps) ولا تحليل JSON.
+- **طلباتك الخاصة.** كل طلب ينفّذ السمة (trait) `Request`. نفّذها لنقطة نهاية لا تغطيها الحزمة بعد.
+- **آمنة مع الأموال.** يعلن كل طلب ما إذا كان يقرأ، أو يكتب، أو يخصم من رصيدك، أو يحذف شيئًا. لا يُعاد إرسال الطلبات المدفوعة أبدًا، ووضع القراءة فقط يمنع أي تغيير.
+- **مرونة مدمجة.** تُراعى حدود معدل الطلبات تلقائيًا، وتُعاد محاولة إجابات 429، وتُعاد محاولة أخطاء الشبكة في عمليات القراءة.
+- **أخطاء واضحة.** نوع `Error` واحد مع تصنيف ثابت، ورمز الخطأ من API، وأخطاء التحقق على مستوى الحقول، ومعرّف الارتباط (correlation ID) وتلميح.
+- **Rust حديثة.** عمل غير متزامن (async) على Tokio، و`reqwest` مع rustls (بلا OpenSSL)، ونماذج serde، وترقيم صفحات كسول على هيئة `Stream`، وعميل `Send + Sync` قابل للنسخ (clone)، و`#![deny(missing_docs)]`.
+- **خصوصية تامة.** لا قياس عن بُعد (telemetry). لا يغادر عمليتك شيء سوى الطلبات التي ترسلها إلى API.
+
+وهي النظير في Rust لـ [`dna`، أداة CLI الخاصة بـ Domain Name API](https://github.com/domainreseller/cli): وثيقة API نفسها،
+والعمليات والمجموعات نفسها، وفئات الأمان نفسها، وقواعد إعادة المحاولة ورموز الأخطاء نفسها.
+
+## المحتويات
+
+- [التثبيت](#التثبيت)
+- [بيانات الاعتماد](#بيانات-الاعتماد)
+- [البدء السريع](#البدء-السريع)
+- [الإعداد](#الإعداد)
+- [الاستخدام](#الاستخدام): [الحساب](#الحساب) · [النطاقات](#النطاقات) · [جهات الاتصال](#جهات-الاتصال) · [DNS](#dns) · [DNSSEC](#dnssec) · [SSL](#ssl) · [الاستضافة](#الاستضافة) · [الطلبات والمنتجات](#الطلبات-والمنتجات)
+- [الطلبات والسمة `Request`](#الطلبات-والسمة-request)
+- [الأخطاء](#الأخطاء)
+- [الأمان وإعادة المحاولة وحدود معدل الطلبات](#الأمان-وإعادة-المحاولة-وحدود-معدل-الطلبات)
+- [الشيفرة غير المتزامنة والشيفرة الحاجبة](#الشيفرة-غير-المتزامنة-والشيفرة-الحاجبة)
+- [اختبار شيفرتك](#اختبار-شيفرتك)
+- [بنية المشروع](#بنية-المشروع)
+- [التطوير](#التطوير)
+- [الترقية من 1.x](#الترقية-من-1x)
+
+## التثبيت
+
+> [!IMPORTANT]
+> **استخدم دائمًا [أحدث إصدار](https://github.com/domainreseller/rust-dna/releases/latest).** حزم الإصدارات مرقّمة بإصدارات ومُختبرة.
+> أما زر **Code → Download ZIP** الأخضر فينزّل فرع التطوير بدلًا منها.
+
+</div>
+
+```toml
+[dependencies]
+domainnameapi = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+futures-util = "0.3"   # لقراءة تدفقات list_all
+```
+
+<div dir="rtl">
+
+إلى أن تُنشر الحزمة (crate) على crates.io، خذها من وسم (tag) الإصدار:
+
+</div>
+
+```toml
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.0.0" }
+```
+
+<div dir="rtl">
+
+**المتطلبات:** Rust 1.83 أو أحدث، وبيئة تشغيل Tokio. التبعيات هي `reqwest` (مع rustls، بلا OpenSSL)،
+و`serde`/`serde_json`، و`tokio` (للمؤقّتات فقط)، و`futures-util`، و`chrono`، و`base64` و`httpdate`.
+
+## بيانات الاعتماد
+
+تصادق API على كل طلب بقيمتين، وترسلهما الحزمة نيابةً عنك:
+
+| القيمة | الترويسة (Header) | أين تجدها |
+|---|---|---|
+| Reseller ID (معرّف UUID) | `__reseller` | لوحة الموزّع ← **API settings** |
+| API key | `X-API-KEY` | لوحة الموزّع ← **API settings** |
+
+> [!NOTE]
+> هذه **بيانات اعتماد API**: بيانات تسجيل الدخول إلى اللوحة لا تعمل هنا. **تستخدم بيئة الإنتاج وبيئة OTE (بيئة الاختبار)
+> مفاتيح API مختلفة.** استخدام مفتاح إحداهما مع الأخرى يفشل بالخطأ `INVALID_API_KEY` أو `INVALID_RESELLER`.
 
 ## البدء السريع
 
+</div>
+
 ```rust
-use domainnameapi::DomainNameApi;
+use domainnameapi::contacts::Contact;
+use domainnameapi::domains::{DomainContacts, DomainListRequest, DomainRegisterWithContactsRequest};
+use domainnameapi::{Client, Environment};
+use futures_util::TryStreamExt;
 
-fn main() {
-    let mut dna = DomainNameApi::new("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "your-api-key", false);
+#[tokio::main]
+async fn main() -> Result<(), domainnameapi::Error> {
+    // OTE هي بيئة الاختبار: API حقيقية، وبيانات خاصة بها، ولا أموال حقيقية.
+    let client = Client::builder()
+        .credentials("your-reseller-id", "your-api-key")
+        .environment(Environment::Ote)
+        .build()?;
 
-    let details = dna.get_details("example.com");
-    if details["result"] == "OK" {
-        println!("Expires: {}", details["data"]["Dates"]["Expiration"]);
-    } else {
-        eprintln!("{}: {}", details["error"]["Code"], details["error"]["Message"]);
+    // 1. تحقّق من بيانات الاعتماد والرصيد.
+    let account = client.account().get().await?;
+    println!("{}: {} USD", account.reseller_name, account.usd_balance);
+
+    // 2. هل النطاق متاح، وبأي سعر؟
+    let search = client.domains().search("my-new-domain.com").await?;
+    println!("{} {} {}", search.info.status, search.info.price, search.info.currency);
+
+    // 3. سجّله بجهة اتصال واحدة للأدوار الأربعة كلها. هذا يخصم من الرصيد.
+    let contact = Contact {
+        first_name: "Ada".into(),
+        last_name: "Lovelace".into(),
+        email: "ada@example.com".into(),
+        address: "1 Example Street".into(),
+        city: "Istanbul".into(),
+        state: "Istanbul".into(),
+        postal_code: "34000".into(),
+        country: "TR".into(),
+        phone_country_code: "90".into(),
+        phone: "5551234567".into(),
+        ..Default::default()
+    };
+    let request = DomainRegisterWithContactsRequest::new(
+        "my-new-domain.com",
+        DomainContacts::same(contact),
+        ["tr.apiname.com", "eu.apiname.com"],
+    );
+    let result = client.domains().register_with_contacts(request).await?;
+    println!("{} {}, expires {:?}", result.success, result.status, result.expiration_date);
+
+    // 4. اعرض كل النطاقات؛ تُجلب الصفحات أثناء قراءة التدفق (stream).
+    let mut domains = client.domains().list_all(DomainListRequest::new());
+    while let Some(domain) = domains.try_next().await? {
+        println!("{} expires in {} days", domain.domain_name, domain.remaining_days);
     }
+    Ok(())
 }
 ```
 
-كل مثال في المجلد [examples/](examples) يُشغَّل عبر `cargo run --example <الاسم>`، مثل `cargo run --example get_details`.
+<div dir="rtl">
 
-## بنية الواجهة البرمجية
+يحتوي مجلد [الأمثلة](examples) على برامج قابلة للتشغيل لهذه السيناريوهات (`quickstart`، و`register`، و`dns`، و`ssl`،
+و`custom_request`، و`error_handling`). وهي تقرأ متغيرات البيئة `DNA_*`، لذا وجّهها إلى OTE:
 
-- **نوع عميل واحد**، `DomainNameApi`. تأخذ الدوال `&mut self` (يحتفظ العميل بآخر طلب لأغراض التشخيص).
-- **القيم المُعادة من نوع `serde_json::Value`** وبالبنية نفسها التي تعيدها php-dna تمامًا — وليست نماذج ذات أنواع. أسماء المفاتيح، والأعلام النصية (`"true"` / `"false"`)، والمبالغ المنسّقة (`"11.9900"`) والأغلفة كلها متطابقة:
-  - النجاح: `{"result": "OK", "data": {...}}`
-  - الفشل: `{"result": "ERROR", "error": {"Code": "...", "Message": "...", "Details": "..."}}`
-  - بعض الدوال تستخدم غلافًا آخر منقولًا من php-dna: تعيد `get_current_balance` كائن `OperationResult`، وتعيد `check_availability` قائمة مجرّدة عند النجاح، وتعيد `get_reseller_details` حقولها في المستوى الأعلى.
-- **تُعاد الأخطاء ولا تُرمى.** أخطاء البوابة وأخطاء HTTP وأعطال الشبكة تعود جميعها كغلاف خطأ؛ لا شيء يسبب panic. كما تعيد عمليات التسجيل والنقل والتجديد خطأً عندما تجيب البوابة بـ HTTP 200 مع `success: false`.
-- **المدخلات المُهيكلة** (جهات الاتصال، قوائم خوادم الأسماء، المرشحات، سمات TLD، محتويات السجلات) هي قيم `&Value` تُبنى باستخدام `json!`. تستخدم خرائط جهات الاتصال مفاتيح php-dna (`FirstName` و`EMail` و`AddressLine1` و`PhoneCountryCode`، ...)؛ ويُقبل الشكلان المسطّح والمتداخل (`Address.Line1` و`Phone.Phone.Number`). يمكن أن تكون قوائم خوادم الأسماء قائمة أو خريطة (تُستخدم القيم).
-- **لا توجد معاملات افتراضية في Rust.** تأخذ كل دالة قائمة معاملات php-dna الكاملة بالترتيب نفسه. تُصدَّر القيم الافتراضية لـ php-dna كثوابت: `DEFAULT_TTL` (3600) و`DEFAULT_REASON` ("Owner request") و`DEFAULT_FORWARD_TYPE` ("Standard") و`DEFAULT_CURRENCY` ("USD") و`DEFAULT_TLD_COUNT` (20) و`DEFAULT_COMMAND` ("create"). ولـ `register_with_contact_info`، التي لها أربعة معاملات اختيارية، توجد أيضًا `register_with_contact_info_opts` التي تأخذ بنية `RegisterOptions` تكون قيمتها `Default` هي القيم الافتراضية لـ php-dna.
+</div>
+
+```bash
+export DNA_RESELLER_ID=... DNA_API_KEY=... DNA_ENV=ote
+cargo run --example quickstart -- example.com
+```
+
+<div dir="rtl">
+
+## الإعداد
+
+هناك ثلاث طرق لإنشاء عميل:
+
+</div>
+
+```rust
+// بيئة الإنتاج، بالإعدادات الافتراضية
+let client = Client::new(reseller_id, api_key)?;
+
+// كل الإعدادات
+let client = Client::builder()
+    .credentials(reseller_id, api_key)
+    .environment(Environment::Ote)
+    .timeout(Duration::from_secs(30))
+    .read_only(true)
+    .build()?;
+
+// متغيرات البيئة نفسها التي تقرؤها أداة dna CLI ...
+let client = Client::from_env()?;
+
+// ... إضافةً إلى إعداداتك الخاصة
+let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
+```
+
+<div dir="rtl">
+
+| دالة `ClientBuilder` | الافتراضي | المعنى |
+|---|---|---|
+| `credentials(reseller_id, api_key)` | (مطلوب) | بيانات الاعتماد. تفشل `build()` بالخطأ `NO_CREDENTIALS` عندما تكون إحداهما فارغة. |
+| `environment(...)` | `Production` | `Production` (‏`https://api.domainresellerapi.com`) أو `Ote` (‏`https://ote.domainresellerapi.com`). |
+| `base_url(...)` | لا شيء | يتجاوز عنوان البيئة، مثلًا عند استخدام وكيل (proxy). يُحتفَظ ببادئة المسار (path prefix). |
+| `timeout(...)` | 60 ثانية | المهلة الزمنية لمحاولة واحدة. |
+| `max_retries(...)` | 2 | عدد مرات تكرار الطلب الفاشل (انظر [إعادة المحاولة](#الأمان-وإعادة-المحاولة-وحدود-معدل-الطلبات)). القيمة 0 توقف إعادة المحاولة. |
+| `max_retry_delay(...)` | 30 ثانية | أطول انتظار قبل إعادة المحاولة. |
+| `pace_requests(...)` | `true` | يوزّع الطلبات زمنيًا لتبقى ضمن حدود معدل الطلبات في البوابة (gateway). |
+| `read_only(...)` | `false` | يمنع كل طلب ليس قراءةً، قبل إرساله. |
+| `user_agent(...)` | `DomainNameAPI-Rust/<version>` | ترويسة `User-Agent`. |
+| `http_client(...)` | العميل الخاص بالحزمة | `reqwest::Client` الخاص بك (وكيل، إعدادات TLS). |
+
+تقرأ `from_env()` ما يلي:
+
+| المتغير | المعنى |
+|---|---|
+| `DNA_RESELLER_ID`, `DNA_API_KEY` | بيانات الاعتماد. |
+| `DNA_ENV` | `production` أو `ote` (وأيضًا `prod` و`live` و`test` و`sandbox`). |
+| `DNA_TEST_MODE` | القيم `true` أو `1` أو `on` أو `yes` تختار OTE. تُستخدم عند عدم ضبط `DNA_ENV`. |
+| `DNA_BASE_URL` | تجاوز اختياري للعنوان الأساسي. |
+| `DNA_READ_ONLY` | القيمة `true` تفعّل وضع القراءة فقط. |
+
+النوع `Client` هو `Clone + Send + Sync`، ونسخه (clone) رخيص (فهو يحتفظ بـ `Arc`). أنشئ عميلًا واحدًا لكل مجموعة بيانات اعتماد
+وشاركه طوال عمر التطبيق: فتنظيم وتيرة الطلبات يجري لكل عميل على حدة.
 
 ## الاستخدام
 
-تفترض كل المقتطفات وجود `use domainnameapi::{json, DomainNameApi};` وعميل `let mut dna = DomainNameApi::new(...)`.
+لكل مجال في API عميله الخاص، ويحمل اسمًا مطابقًا لمجموعات الأوامر في CLI: `client.account()`،
+و`client.contacts()`، و`client.domains()` (مع `forwarding()` و`child_name_servers()` و`documents()`)،
+و`client.dns()`، و`client.dnssec()`، و`client.ssl()`، و`client.hosting()`، و`client.orders()` و`client.products()`.
+المدخلات المطلوبة تُمرَّر وسائطَ؛ أما العمليات ذات المدخلات الاختيارية فتأخذ طلبًا يُبنى بـ `new(...)` ودوال ضبط (setters)
+متسلسلة. وتذكر الدوال التي تخصم من رصيدك ذلك في توثيقها.
 
-#### تسجيل النطاق
+### الحساب
 
-ملاحظة: تتطلب نطاقات .tr معاملات إضافية. يُستخدم معامل السمات الإضافية لأسماء النطاقات التي تحتاج إلى معلومات إضافية مثل .tr.
+</div>
 
 ```rust
-let contact = json!({
-    "FirstName": "John",
-    "LastName": "Doe",
-    "Company": "Example Corp",
-    "EMail": "john.doe@example.com",
-    "AddressLine1": "123 Lorem Street",
-    "AddressLine2": "Suite 456",
-    "AddressLine3": "",
-    "City": "Springfield",
-    "Country": "US",
-    "Fax": "1234567890",
-    "FaxCountryCode": "1",
-    "Phone": "9876543210",
-    "PhoneCountryCode": 1,
-    "Type": "Contact",
-    "ZipCode": "12345",
-    "State": "IL"
-});
-let contacts = json!({
-    "Administrative": contact,
-    "Billing": contact,
-    "Technical": contact,
-    "Registrant": contact
-});
+let account = client.account().get().await?;          // reseller_id, reseller_name, try_balance, usd_balance
+let profile = client.account().profile().await?;      // name, company_name, account_currency, status, ...
 
-let result = dna.register_with_contact_info(
-    "example.com",
-    1,
-    &contacts,
-    &json!(["ns1.example.com", "ns2.example.com"]),
-    true,  // registrar (theft protection) lock
-    false, // privacy protection
-    &json!({}),
-);
-
-// Same, with php-dna's defaults for the optional arguments
-// (default nameservers, lock on, privacy off, no attributes):
-use domainnameapi::RegisterOptions;
-let result = dna.register_with_contact_info_opts("example.com", 1, &contacts, &RegisterOptions::default());
+// رسوم هذا الشهر، عبر كل الصفحات
+let request = AccountTransactionsRequest::new()
+    .charge_type(ChargeType::Subtract)
+    .start_date("2026-11-01T00:00:00Z".parse()?)
+    .transaction_types([TransactionType::Register, TransactionType::Renew]);
+let mut transactions = client.account().all_transactions(request);
+while let Some(t) = transactions.try_next().await? {
+    println!("{:?} {} {} {}", t.creation_time, t.transaction_type, t.amount, t.amount_currency);
+}
 ```
 
-لنطاق `.tr` مرّر سمات TRABIS. ترسل المكتبة فقط ما تقبله البوابة (`TRABISDOMAINCATEGORY` و`TRABISCITIZENID` و`TRABISTAXOFFICE` و`TRABISTAXNUMBER`)، وتحوّل `1`/`0` إلى `Owner`/`Corporate`، وتصحّح التهجئة القديمة `TRABISCITIZIENID`:
+<div dir="rtl">
+
+### النطاقات
+
+**البحث**
+
+</div>
 
 ```rust
-let result = dna.register_with_contact_info_opts(
+let one = client.domains().search("example.com").await?;
+let available = one.success && one.info.is_available();
+
+let many = client.domains().bulk_search(["example.com", "example.net", "example.com.tr"]).await?;
+for domain in many.available() {
+    println!("{}: {} {}", domain.domain_name, domain.price, domain.currency);
+}
+
+// مع عملة
+client.domains().search_with(DomainSearchRequest::new("example.com").currency("USD")).await?;
+```
+
+<div dir="rtl">
+
+**القوائم والتفاصيل**
+
+</div>
+
+```rust
+let page = client.domains().list(DomainListRequest::new().limit(50).statuses([DomainStatus::Active])).await?;
+
+let all: Vec<Domain> = client.domains().list_all(DomainListRequest::new().domain_name("example")).try_collect().await?;
+
+let info = client.domains().info("example.com").await?;
+println!("{} {:?}", info.auth_code, info.expiration_date);
+if let Some(registrant) = info.contact(ContactType::Registrant) {
+    println!("{}", registrant.email);
+}
+```
+
+<div dir="rtl">
+
+**التسجيل والتجديد والنقل والاستعادة** (تخصم من رصيدك)
+
+</div>
+
+```rust
+// جهة اتصال واحدة للأدوار الأربعة كلها، لمدة سنتين
+let request = DomainRegisterWithContactsRequest::new("example.com", DomainContacts::same(contact.clone()), ["tr.apiname.com", "eu.apiname.com"])
+    .years(2);
+client.domains().register_with_contacts(request).await?;
+
+// جهات اتصال مختلفة لكل دور، وسمات جهة التسجيل، وخدمة الوكيل الأمين (trustee)
+let request = DomainRegisterWithContactsRequest::new(
     "example.com.tr",
-    1,
-    &contacts,
-    &RegisterOptions {
-        name_servers: json!(["ns1.example.com", "ns2.example.com"]),
-        additional_attributes: json!({
-            "TRABISDOMAINCATEGORY": 1,
-            "TRABISCITIZIENID": "12345678901",
-            "TRABISNAMESURNAME": "John Doe",
-            "TRABISCOUNTRYID": "840",
-            "TRABISCITYID": "17"
-        }),
-        ..RegisterOptions::default()
-    },
-);
-```
+    DomainContacts { registrant: Some(owner), admin: Some(staff.clone()), tech: Some(staff.clone()), billing: Some(staff) },
+    ["tr.apiname.com", "eu.apiname.com"],
+)
+.tld_attribute("<key>", "<value>"); // المفاتيح: client.products().tld("com.tr").await?.unwrap().attributes
 
-<details>
-<summary>مثال على المخرجات لتسجيل النطاق</summary>
+// بمعرّفات جهات اتصال موجودة
+let request = DomainRegisterRequest::new("example.com", ContactHandles::same("DNA-12345"), ["tr.apiname.com", "eu.apiname.com"]);
+client.domains().register(request).await?;
 
-```json
-{
-  "data": {
-    "ID": 123456,
-    "Status": "Active",
-    "DomainName": "example.com",
-    "AuthCode": "Xy9#mK2$pL5@vN8",
-    "LockStatus": "true",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "false",
-    "Contacts": {
-      "Billing": {"ID": 987654},
-      "Technical": {"ID": 987654},
-      "Administrative": {"ID": 987654},
-      "Registrant": {"ID": 987654}
-    },
-    "Dates": {
-      "Start": "2024-03-15T10:00:00",
-      "Expiration": "2025-03-15T10:00:00",
-      "RemainingDays": 365
-    },
-    "NameServers": ["ns1.example.com", "ns2.example.com"],
-    "Additional": [],
-    "ChildNameServers": []
-  },
-  "result": "OK"
+let renewal = client.domains().renew_check("example.com", Some(1)).await?;   // مجاني
+if renewal.renewable {
+    client.domains().renew("example.com", 1).await?;
 }
+
+let check = client.domains().transfer_check("example.com", "EPP-CODE").await?;  // مجاني
+if check.transferable {
+    client.domains().transfer(DomainTransferRequest::new("example.com", "EPP-CODE")).await?;
+}
+
+client.domains().restore("example.com").await?;
 ```
 
-</details>
+<div dir="rtl">
 
-<hr style="border: 4px solid #000; border-style: dashed;">
+تُفحص الطلبات قبل إرسالها. التسجيل دون أدوار جهات الاتصال الأربعة جميعها، أو جهة اتصال بلا عنوان بريد إلكتروني،
+أو مدة 0 سنة، يُعيد خطأ `ErrorKind::InvalidInput` يسرد كل المشكلات، ولا يصل شيء إلى API.
 
-#### تجديد النطاق
+> [!NOTE]
+> قد تجيب API عن طلب تسجيل أو تجديد أو نقل بحالة HTTP 200 مع `"success": false` (مثلًا عندما ترفض
+> جهة التسجيل (registry) النطاق). تُعيد الحزمة هذه الإجابة كما هي، كما تفعل حزمة Java: تحقّق من
+> `DomainOperationResult::success` و`message`. وينطبق الأمر نفسه على `SslOperationResult` و`ContactCreateResult`.
+
+**الإعدادات**
+
+</div>
 
 ```rust
-let result = dna.renew("example.com", 1);
+client.domains().lock("example.com").await?;
+client.domains().unlock("example.com").await?;
+client.domains().set_privacy("example.com", true).await?;
+client.domains()
+    .set_name_servers(DomainNameServersSetRequest::new("example.com", ["ns1.example.net", "ns2.example.net"]))
+    .await?;
+client.domains()   // نطاق موقَّع بـ DNSSEC
+    .set_name_servers(DomainNameServersSetRequest::new("example.com", ["ns1.example.net"]).dnssec_mode(DnssecMode::DisableDnssec))
+    .await?;
+let auth_code = client.domains().update_auth_code("example.com").await?;
+
+client.domains().update_contacts("example.com", DomainContacts::same(contact)).await?;
+client.domains().set_contact_handles("example.com", ContactHandles { tech: "DNA-12345".into(), ..Default::default() }).await?;
 ```
 
-<details>
-<summary>مثال على المخرجات لتجديد النطاق</summary>
+<div dir="rtl">
 
-```json
-{
-  "result": "OK",
-  "data": {
-    "ExpirationDate": "2025-03-15T10:00:00"
-  }
-}
-```
+**إعادة توجيه URL وخوادم الأسماء الفرعية والمستندات**
 
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### نقل النطاق
-
-لا تُرسل عمليات النقل بيانات جهات الاتصال أبدًا: يتسلّم المسجّل جهات الاتصال من المسجّل السابق، لذا يحمل كل طلب نقل `contacts: []`.
+</div>
 
 ```rust
-let result = dna.transfer("example.com", "Xy9#mK2$", 3);
+client.domains().forwarding().set("example.com", "https://www.example.net", ForwardType::Standard).await?;
+let forwarding = client.domains().forwarding().get("example.com").await?;   // None عندما لا تكون مضبوطة
+client.domains().forwarding().delete("example.com").await?;
+
+// يُكتشف إصدار IP لكل عنوان تلقائيًا
+client.domains().child_name_servers().add("example.com", "ns1.example.com", ["192.0.2.10", "2001:db8::10"]).await?;
+client.domains().child_name_servers()
+    .update(DomainHostUpdateRequest::new("example.com", "ns1.example.com", ["192.0.2.20"]))
+    .await?;
+client.domains().child_name_servers().delete("example.com", "ns1.example.com").await?;
+
+// مستندات جهة التسجيل (غالبًا لـ .tr)
+let document = DocumentUpload::from_file(DocumentType::IdentityCard, "id.pdf")?;
+client.domains().documents().upload("example.com.tr", [document]).await?;
+let documents: Vec<Document> = client.domains().documents().list_all("example.com.tr").try_collect().await?;
 ```
 
-<details>
-<summary>مثال على المخرجات لنقل النطاق</summary>
+<div dir="rtl">
 
-```json
-{
-  "data": {
-    "ID": 0,
-    "Status": "Active",
-    "DomainName": "",
-    "AuthCode": "",
-    "LockStatus": "false",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "false",
-    "Contacts": {
-      "Billing": {"ID": 0},
-      "Technical": {"ID": 0},
-      "Administrative": {"ID": 0},
-      "Registrant": {"ID": 0}
-    },
-    "Dates": {"Start": "", "Expiration": "2027-11-09T12:00:00", "RemainingDays": 365},
-    "NameServers": [],
-    "Additional": [],
-    "ChildNameServers": []
-  },
-  "result": "OK"
-}
-```
+### جهات الاتصال
 
-</details>
+معرّفات جهات الاتصال (handles) هي جهات اتصال قابلة لإعادة الاستخدام. أنشئ واحدة مرة واحدة واستخدمها لنطاقات كثيرة.
 
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### إدارة عمليات النقل
+</div>
 
 ```rust
-// Can the domain be transferred with this auth code?
-let check = dna.check_transfer("example.com", "Xy9#mK2$");
+let created = client.contacts().create(contact.clone()).await?;
+let handle = created.handle;                                         // مثلًا DNA-12345
 
-// Cancel an incoming transfer, approve or reject an outgoing one
-let result = dna.cancel_transfer("example.com");
-let result = dna.approve_transfer("example.com");
-let result = dna.reject_transfer("example.com");
+let details = client.contacts().get(&handle).await?;                 // جهة الاتصال وحالة التحقق منها
+let result = client.contacts().update(&handle, contact).await?;
+println!("{} of {} domains updated", result.stats.success_count, result.stats.total_domain_count);
+
+let verifications = client.contacts().verification(&handle).await?;
+client.contacts().resend_verification(&handle).await?;
 ```
 
-<details>
-<summary>مثال على المخرجات لإدارة عمليات النقل</summary>
+<div dir="rtl">
 
-```json
-{
-  "result": "OK",
-  "data": {
-    "TransferAvailabilityStatus": true,
-    "AuthCodeIsRequired": true,
-    "AuthCodeIsValid": true,
-    "UserTransferRequired": false,
-    "TransferLock": false,
-    "Message": "Domain can be transferred",
-    "MessageKey": "TransferAvailable",
-    "Additional": []
-  }
-}
-```
+### DNS
 
-تعيد `check_transfer` القيمة `"result": "ERROR"` مع `error` (`TRANSFER_NOT_AVAILABLE`) عندما يفيد السجل بأن النطاق غير قابل للنقل؛ ويكون `data` ممتلئًا في الحالتين. وتعيد `cancel_transfer` و`approve_transfer` و`reject_transfer`:
+سجلات المنطقة (zone) للنطاقات الموجودة على خوادم أسماء المنصة. تُحَلّ السجلات علنًا بمجرد أن يستخدم النطاق تلك الخوادم،
+وهذا ما تتولاه `apply`.
 
-```json
-{"result": "OK", "data": {"DomainName": "example.com", "Status": "Cancelled"}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### قائمة النطاقات
+</div>
 
 ```rust
-let result = dna.get_list(&json!({
-    "OrderColumn": "Id",
-    "OrderDirection": "ASC",
-    "PageNumber": 0,
-    "PageSize": 1000
-}));
-
-// No filters:
-let result = dna.get_list(&json!({}));
-```
-
-يبدأ `PageNumber` من 0. ويمكن أيضًا تمرير معاملات البوابة الخاصة `MaxResultCount` و`SkipCount` و`Sorting`، ومرشحات مثل `DomainName`.
-
-<details>
-<summary>مثال على المخرجات لقائمة النطاقات</summary>
-
-```json
-{
-  "data": {
-    "Domains": [
-      {
-        "ID": 564346,
-        "Status": "Active",
-        "DomainName": "example.com",
-        "AuthCode": "",
-        "LockStatus": "true",
-        "PrivacyProtectionStatus": "false",
-        "IsChildNameServer": "false",
-        "Contacts": {
-          "Billing": {"ID": ""},
-          "Technical": {"ID": ""},
-          "Administrative": {"ID": ""},
-          "Registrant": {"ID": ""}
-        },
-        "Dates": {
-          "Start": "2024-03-15T10:00:00",
-          "Expiration": "2025-03-15T10:00:00",
-          "RemainingDays": 365
-        },
-        "NameServers": ["ns1.example.com", "ns2.example.com"],
-        "Additional": [],
-        "ChildNameServers": []
-      }
-    ]
-  },
-  "result": "OK",
-  "TotalCount": 1
+for set in client.dns().list("example.com").await? {
+    println!("{} {} {} {:?}", set.name, set.record_type, set.ttl, set.values());
 }
+
+let dns = client.dns();
+dns.add(DnsAddRequest::new("example.com", "www", RecordType::A, ["192.0.2.10"])).await?;
+dns.add(DnsAddRequest::new("example.com", "@", "txt", ["v=spf1 include:_spf.example.net ~all"])).await?;   // "txt" تعني TXT
+dns.add(DnsAddRequest::new("example.com", "@", RecordType::Mx, ["10 mx1.example.net", "20 mx2.example.net"]).ttl(3600)).await?;
+dns.update(DnsUpdateRequest::new("example.com", "www", RecordType::A, ["192.0.2.20"]).ttl(300)).await?;
+dns.delete(DnsDeleteRequest::new("example.com", "www", RecordType::A, "192.0.2.20")).await?;
+
+let applied = dns.apply("example.com").await?;
 ```
 
-</details>
+<div dir="rtl">
 
-<hr style="border: 4px solid #000; border-style: dashed;">
+تفحص الحزمة ما سترفضه API: سجل CNAME عند الجذر (apex)، أو سجل MX بلا أولويته، أو قيمة CAA ناقصة الأجزاء الثلاثة،
+أو سجل A ليس عنوان IPv4، أو TTL خارج النطاق 1–86400. تُباعَد استدعاءات المنطقة بثانية واحدة، وهي حدّ البوابة.
+تجيب بيئة الاختبار OTE عن استدعاءات المنطقة بحالة HTTP 500، لذا لا يمكن تجربة شيفرة DNS إلا في بيئة الإنتاج.
 
-#### قائمة TLD
+### DNSSEC
+
+</div>
 
 ```rust
-let result = dna.get_tld_list(100);
+let info = client.dnssec().get("example.com").await?;      // status, ds_records, allowed_algorithms, ...
+
+let record: DsData = "12345 13 2 49FD46E6C4B45C55D4AC69CBD3CD34AC1AFE51DE".parse()?;
+client.dnssec().add("example.com", [record.clone()]).await?;
+client.dnssec().remove("example.com", record).await?;
+client.dnssec().disable("example.com").await?;            // يزيل كل سجلات DS
 ```
 
-<details>
-<summary>مثال على المخرجات لقائمة TLD</summary>
+<div dir="rtl">
 
-```json
-{
-  "data": [
-    {
-      "id": 1,
-      "status": "Active",
-      "maxchar": 63,
-      "maxperiod": 10,
-      "minchar": 1,
-      "minperiod": 1,
-      "tld": "com",
-      "pricing": {
-        "registration": {"1": "10.8100"},
-        "renew": {"1": "11.0100"},
-        "transfer": {"1": "10.6100"},
-        "restore": {"1": "99.9000"}
-      },
-      "currencies": {
-        "registration": "USD",
-        "renew": "USD",
-        "transfer": "USD",
-        "restore": "USD"
-      }
+### SSL
+
+يمكن أن يكون للنطاق الواحد عدة شهادات، ولذلك تُحدَّد الشهادة القائمة عبر **معرّف الشهادة** (من النوع GUID)،
+لا عبر اسم النطاق أبدًا. تعيد `initialize` و`renew` هذا المعرّف: احتفظ به. وتعثر `list` على معرّفات الشهادات
+التي تملكها بالفعل.
+
+</div>
+
+```rust
+// 1. الشراء (يخصم من الرصيد). تأتي رموز الحزم من client.products().ssls(...).
+let approvers = client.ssl().approvers(SslApproversRequest::for_purchase("example.com", "PKG-CODE")).await?;
+let order = client.ssl().initialize("example.com", "PKG-CODE").await?;
+let certificate_id = order.certificate_id;                  // احتفظ به: كل استدعاء لاحق يأخذه
+
+// 2. طلب CSR ومفتاح خاص، إن لم يكونا لديك
+let csr = client.ssl().generate_csr(
+    SslGenerateCsrRequest::new("example.com")
+        .country("TR").state("Istanbul").locality("Istanbul").organization("Example Ltd").organization_unit("IT"),
+).await?;
+
+// 3. الإعداد خلال 15 يومًا: CSR، وطريقة التحقق، وجهة الاتصال
+client.ssl().configure(
+    SslConfigureRequest::new(&certificate_id, &csr.csr, certificate_contact.clone())
+        .authentication_type(AuthenticationType::Email)
+        .approver_mail(&approvers[0])
+        .web_server_type(WebServerType::Apache),
+).await?;
+
+// 4. انتظر الإصدار، ثم نزّل الشهادة
+let status = client.ssl().status(&certificate_id).await?;
+if status.is_issued {
+    let content = client.ssl().content(&certificate_id).await?;
+    std::fs::write("fullchain.pem", content.full_chain())?;
+}
+
+let details = client.ssl().get(&certificate_id).await?;     // الاشتراك، والإعداد، وجهات الاتصال
+client.ssl().reissue(SslReissueRequest::new(&certificate_id).csr(new_csr).private_key(new_key)).await?;
+client.ssl().revoke(&certificate_id).await?;                // لا يمكن التراجع عنه
+```
+
+<div dir="rtl">
+
+**عرض الشهادات والعثور على المعرّف**
+
+</div>
+
+```rust
+let page = client.ssl().list(SslListRequest::new().domain_name("example.com")).await?;   // الأحدث أولًا
+
+let mut all = client.ssl().list_all(SslListRequest::new());
+while let Some(c) = all.try_next().await? {
+    println!("{} {} {} {:?}", c.certificate_id, c.domain_name, c.status, c.subscription_expires_at);
+}
+
+// عناوين المعتمِدين (approvers) لشهادة تملكها بالفعل
+let mails = client.ssl().approvers(SslApproversRequest::for_certificate(&certificate_id)).await?;
+```
+
+<div dir="rtl">
+
+**التجديد** (يخصم من رصيدك)
+
+</div>
+
+```rust
+// مسموح به بدءًا من 30 يومًا قبل details.subscription.expires_at. التجديد شهادة جديدة بمعرّف خاص بها.
+let renewal = client.ssl().renew(&certificate_id).await?;
+client.ssl().configure(
+    SslConfigureRequest::new(&renewal.certificate_id, &new_csr, certificate_contact)
+        .authentication_type(AuthenticationType::Email)
+        .approver_mail(&approvers[0]),
+).await?;
+```
+
+<div dir="rtl">
+
+يجب إعداد الشهادة المشتراة أو المجدَّدة خلال 15 يومًا، وإلا أُلغيت. للتجديد استدعِ `renew` ثم `configure`
+بالمعرّف الجديد. لا تشترِ مجددًا عبر `initialize`: فذلك شراء مستقل بسعر الشراء، ولن توسَم الشهادة القديمة بأنها
+مجدَّدة أبدًا. معرّف الشهادة الفارغ أو الذي ليس GUID (مثل اسم نطاق تمرّره شيفرة أقدم) يُرفض قبل إرسال أي شيء.
+
+### الاستضافة
+
+</div>
+
+```rust
+let packages = client.hosting().packages().await?;
+let created = client.hosting().create("example.com", "starter-linux").await?;          // يخصم من الرصيد
+let status = client.hosting().status(HostingStatusRequest::by_service_id(&created.service_id)).await?;
+if status.is_active() {
+    println!("{} {}", status.panel_address, status.username);
+}
+let hosting = client.hosting().get(HostingGetRequest::by_domain("example.com")).await?;
+let plans = client.hosting().plans(None).await?;
+```
+
+<div dir="rtl">
+
+### الطلبات والمنتجات
+
+</div>
+
+```rust
+let order = client.orders().get("ORDER-CODE").await?;
+
+if let Some(com) = client.products().tld("com").await? {
+    println!("{:?}, DNSSEC: {}", com.register_price(1), com.dnssec_available);
+}
+
+let mut tlds = client.products().all_tlds(ProductTldsRequest::new().currency("USD"));
+while let Some(tld) = tlds.try_next().await? {
+    println!("{}", tld.name);
+}
+
+let price = client.products().info("com", OrderType::Renew, 1).await?;
+let wildcard = client.products().ssls(ProductSslsRequest::new().is_wildcard(true)).await?;
+```
+
+<div dir="rtl">
+
+## الطلبات والسمة `Request`
+
+كل عملية هي نوع طلب يحمل اسم أمر CLI المقابل لها: `dna domain renew` هو `DomainRenewRequest`،
+و`dna domain renew-check` هو `DomainRenewCheckRequest`، و`dna dns add` هو `DnsAddRequest`. تبنيها لك دوال المجالات،
+ويمكنك أيضًا إنشاؤها وإرسالها بنفسك:
+
+</div>
+
+```rust
+let request = DomainRenewRequest::new("example.com", 2);
+let endpoint = request.endpoint();
+println!("{endpoint} is {}", endpoint.safety);   // "POST /api/v1/domains/renew is billable"
+
+let result = client.send(&request).await?;
+
+// الأمر نفسه، مع تفاصيل HTTP: معرّف الارتباط، وحالة الحصة المرنة، وعدد المحاولات، والمدة
+let response = client.send_with_response(&request).await?;
+println!("{} quota {:?}", response.correlation_id, response.quota);
+```
+
+<div dir="rtl">
+
+لا توجد وراثة في Rust؛ أساس كل طلب هو سمة (trait):
+
+| السمة (Trait) | الغرض |
+|---|---|
+| `Request` | كل العمليات. `type Response` هو نوع الإجابة؛ و`Empty` للعمليات التي لا تُعيد شيئًا (قفل، فك القفل، إضافة سجل DNS، ...). |
+| `PagedRequest<T>` | عمليات القوائم (`Response = Page<T>`). تتيح الوصول إلى `Paging` (skip وlimit وsort)، وتعمل مع `Client::list_all`. |
+
+يصف الطلبُ نفسه عبر `endpoint()`: الأسلوب (method)، والمسار، وفئة الأمان، وما إذا كان متساوي القوى (idempotent). أما الدوال
+الثلاث الأخرى فلها تطبيقات افتراضية: تُعيد `query()` سلسلة الاستعلام (يحذف `Query` القيم الفارغة)، وتُعيد `body()` جسم JSON
+(يبني `JsonBody` جسمًا مع حذف القيم الفارغة، أو استخدم `serde_json::json!`)، وتجمع `validate()` المشكلات
+قبل الإرسال. لاستدعاء نقطة نهاية لا تغطيها الحزمة بعد، اكتب طلبك الخاص:
+
+</div>
+
+```rust
+use domainnameapi::{Endpoint, Query, Request, Validator};
+use serde::Deserialize;
+
+struct DomainNotesRequest {
+    domain_name: String,
+}
+
+#[derive(Deserialize)]
+struct DomainNotes {
+    notes: Vec<String>,
+}
+
+impl Request for DomainNotesRequest {
+    type Response = DomainNotes;
+
+    fn endpoint(&self) -> Endpoint {
+        Endpoint::get("/api/v1/domains/notes")          // GET عملية قراءة
     }
-  ],
-  "result": "OK"
-}
-```
 
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### التحقق من توفر النطاق
-
-```rust
-let result = dna.check_availability(["hello", "world123x0"], ["com", "net"], 1, "create");
-```
-
-<details>
-<summary>مثال على المخرجات للتحقق من التوفر</summary>
-
-عند النجاح تكون النتيجة قائمة مجرّدة (بلا مفتاح `result`)؛ وعند الفشل تكون غلاف الخطأ.
-
-```json
-[
-  {
-    "TLD": "com",
-    "DomainName": "hello",
-    "Status": "notavailable",
-    "Command": "create",
-    "Period": 1,
-    "IsFee": false,
-    "Price": "10.8100",
-    "Currency": "USD",
-    "Reason": "Domain exists"
-  },
-  {
-    "TLD": "com",
-    "DomainName": "world123x0",
-    "Status": "available",
-    "Command": "create",
-    "Period": 1,
-    "IsFee": false,
-    "Price": "10.8100",
-    "Currency": "USD",
-    "Reason": null
-  }
-]
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### تفاصيل النطاق
-
-```rust
-let result = dna.get_details("example.com");
-
-// Re-read the domain from the registry (same result shape):
-let result = dna.sync_from_registry("example.com");
-```
-
-<details>
-<summary>مثال على المخرجات لتفاصيل النطاق</summary>
-
-```json
-{
-  "data": {
-    "ID": 564346,
-    "Status": "Active",
-    "DomainName": "example.com",
-    "AuthCode": "DHQ!K52",
-    "LockStatus": "true",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "true",
-    "Contacts": {
-      "Billing": {"ID": "DNA-B-4"},
-      "Technical": {"ID": "DNA-T-3"},
-      "Administrative": {"ID": "DNA-A-2"},
-      "Registrant": {"ID": "DNA-R-1"}
-    },
-    "Dates": {
-      "Start": "2025-05-26T16:08:37",
-      "Expiration": "2027-05-26T16:08:37",
-      "RemainingDays": 449
-    },
-    "NameServers": ["ns1.example.com", "ns2.example.com"],
-    "Additional": {"TRABISDOMAINCATEGORY": "1"},
-    "ChildNameServers": [
-      {"ns": "ns1.example.com", "ip": "1.2.3.4"}
-    ]
-  },
-  "result": "OK"
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### تعديل خوادم الأسماء
-
-```rust
-let result = dna.modify_name_server("example.com", &json!(["ns1.example.com", "ns2.example.com"]));
-```
-
-<details>
-<summary>مثال على المخرجات لتعديل خوادم الأسماء</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServers": ["ns1.example.com", "ns2.example.com"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### تفعيل قفل النطاق
-
-```rust
-let result = dna.enable_theft_protection_lock("example.com");
-```
-
-<details>
-<summary>مثال على المخرجات لتفعيل القفل</summary>
-
-```json
-{"result": "OK", "data": {"LockStatus": true}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### تعطيل قفل النطاق
-
-```rust
-let result = dna.disable_theft_protection_lock("example.com");
-```
-
-<details>
-<summary>مثال على المخرجات لتعطيل القفل</summary>
-
-```json
-{"result": "OK", "data": {"LockStatus": false}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### إضافة خادم أسماء فرعي
-
-```rust
-let result = dna.add_child_name_server("example.com", "ns1.example.com", "1.2.3.4");
-```
-
-<details>
-<summary>مثال على المخرجات لإضافة خادم أسماء فرعي</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServer": "ns1.example.com",
-    "IPAdresses": ["1.2.3.4"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### حذف خادم أسماء فرعي
-
-```rust
-let result = dna.delete_child_name_server("example.com", "ns1.example.com");
-```
-
-<details>
-<summary>مثال على المخرجات لحذف خادم أسماء فرعي</summary>
-
-```json
-{"result": "OK", "data": {"NameServer": "ns1.example.com"}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### تحديث خادم أسماء فرعي
-
-```rust
-let result = dna.modify_child_name_server("example.com", "ns1.example.com", "1.2.3.4");
-```
-
-<details>
-<summary>مثال على المخرجات لتحديث خادم أسماء فرعي</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServer": "ns1.example.com",
-    "IPAdresses": ["1.2.3.4"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### تعديل خصوصية النطاق
-
-`status` قيمة من نوع `bool` أو قيمة كما تخزّنها لوحات التحكم: `"1"` و`"on"` و`"true"` و`"yes"` و`1` تعني التفعيل، وأي قيمة أخرى تعني الإيقاف. يُحتفظ بمعامل السبب (reason) للتوافق فقط ولا يُرسَل، لأن البوابة لا تحتوي على مثل هذا الحقل.
-
-```rust
-let result = dna.modify_privacy_protection_status("example.com", true, "Owner request");
-```
-
-<details>
-<summary>مثال على المخرجات لتعديل الخصوصية</summary>
-
-```json
-{"data": {"PrivacyProtectionStatus": true}, "result": "OK"}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### جلب جهات اتصال النطاق
-
-```rust
-let result = dna.get_contacts("example.com");
-```
-
-<details>
-<summary>مثال على المخرجات لجلب جهات الاتصال</summary>
-
-```json
-{
-  "data": {
-    "contacts": {
-      "Administrative": {
-        "ID": "DNA-A-2",
-        "Status": "Active",
-        "AuthCode": "",
-        "FirstName": "John",
-        "LastName": "Doe",
-        "Company": "Example Corp",
-        "EMail": "john@example.com",
-        "Type": "Administrative",
-        "Address": {
-          "Line1": "123 Main Street",
-          "Line2": "",
-          "Line3": "",
-          "State": "IL",
-          "City": "Springfield",
-          "Country": "US",
-          "ZipCode": "62701"
-        },
-        "Phone": {
-          "Phone": {"Number": "5551234567", "CountryCode": "1"},
-          "Fax": {"Number": "", "CountryCode": ""}
-        },
-        "Additional": []
-      },
-      "Billing": {"...": "same shape"},
-      "Registrant": {"...": "same shape"},
-      "Technical": {"...": "same shape"}
+    fn query(&self) -> Query {
+        Query::new().set_str("DomainName", &self.domain_name)
     }
-  },
-  "result": "OK"
-}
-```
 
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### حفظ جهات اتصال النطاق
-
-```rust
-let contact = json!({
-    "FirstName": "John",
-    "LastName": "Doe",
-    "Company": "Example Corp",
-    "EMail": "john@example.com",
-    "AddressLine1": "123 Main Street",
-    "AddressLine2": "",
-    "AddressLine3": "",
-    "City": "Springfield",
-    "Country": "US",
-    "Fax": "5559876543",
-    "FaxCountryCode": "1",
-    "Phone": "5551234567",
-    "PhoneCountryCode": 1,
-    "Type": "Contact",
-    "ZipCode": "62701",
-    "State": "IL"
-});
-
-let result = dna.save_contacts("example.com", &json!({
-    "Administrative": contact,
-    "Billing": contact,
-    "Technical": contact,
-    "Registrant": contact
-}));
-```
-
-<details>
-<summary>مثال على المخرجات لحفظ جهات الاتصال</summary>
-
-```json
-{"result": "OK", "data": {"contacts": []}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### سجلات منطقة DNS
-
-تخزّن البوابة السجلات على شكل **مجموعات** (اسم + نوع يحمل قيمة واحدة أو أكثر). كتابة مجموعة تستبدل جميع قيمها، وحذف أي قيمة يزيل المجموعة كاملة. تتولى دوال `*_value` عملية القراءة ثم الدمج ثم الكتابة نيابةً عنك، كي تتعامل لوحة التحكم مع السجلات واحدًا تلو الآخر. يمكن أن تكون الأسماء نسبية (`www`)، أو `@` / فارغة للجذر (apex)، أو مؤهلة بالكامل؛ وتُختصر إلى التسمية النسبية التي تتوقعها البوابة. الأنواع المدعومة: A وAAAA وALIAS وCAA وCNAME وDS وMX وNAPTR وPTR وSRV وTLSA وTXT. تُطبَّق التغييرات فورًا عندما تكون `apply` مساوية لـ `true` (القيمة الافتراضية في php-dna)؛ وإلا فاستدعِ `apply_resource_records`. يُترك فاصل لا يقل عن ثانية واحدة بين استدعاءات المنطقة لأن البوابة تحدّ من الطلبات المتلاحقة. إذا فشل التطبيق التلقائي، تعيد الدالة خطأ التطبيق (ويبقى التغيير معلّقًا). وتذكر النتائج النوع بأحرف كبيرة وقيمة TTL المرسلة فعليًا (ما دون 1 يصبح 3600، وما فوق 86400 يصبح 86400).
-
-```rust
-// List every record (one row per value; names come back as FQDNs)
-let records = dna.get_resource_records("example.com");
-
-// Make a set hold exactly these values (an empty list removes the set)
-dna.set_resource_record_set("example.com", "@", "MX", ["10 mx1.example.com", "20 mx2.example.com"], 3600, true);
-
-// Add, remove or replace one value, keeping the others (ttl None keeps the set's TTL)
-dna.add_resource_record_value("example.com", "@", "MX", "30 mx3.example.com", None, true);
-dna.remove_resource_record_value("example.com", "@", "MX", "30 mx3.example.com", true);
-dna.replace_resource_record_value("example.com", "@", "A", "192.0.2.1", "192.0.2.2", None, true);
-
-// Remove a whole set (pass a current value to save a lookup, or "")
-dna.delete_resource_record_set("example.com", "www", "CNAME", true, "");
-
-// Low-level calls, mirroring the gateway endpoints
-dna.add_resource_record("example.com", "www", "A", &json!("192.0.2.5"), 3600, true);
-dna.edit_resource_record("example.com", "www", "www", "A", &json!("192.0.2.6"), 600, true);
-dna.delete_resource_record("example.com", "www", "192.0.2.5", "A", true);
-dna.apply_resource_records("example.com");
-```
-
-<details>
-<summary>مثال على المخرجات لسجلات منطقة DNS</summary>
-
-`get_resource_records`:
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "records": [
-      {"Name": "example.com.", "Type": "A", "TTL": 3600, "Content": "192.0.2.1", "Disabled": false},
-      {"Name": "www.example.com.", "Type": "CNAME", "TTL": 300, "Content": "example.com.", "Disabled": false},
-      {"Name": "example.com.", "Type": "MX", "TTL": 3600, "Content": "10 mx1.example.com.", "Disabled": false}
-    ]
-  }
-}
-```
-
-`set_resource_record_set` / `add_resource_record_value`:
-
-```json
-{"result": "OK", "data": {"Name": "", "Type": "MX", "TTL": 3600, "Contents": ["10 mx1.example.com.", "20 mx2.example.com.", "30 mx3.example.com"]}}
-```
-
-القيمة الموجودة أصلًا (أو غير الموجودة عند الحذف) لا تغيّر شيئًا:
-
-```json
-{"result": "OK", "data": {"Name": "", "Type": "MX", "Contents": ["10 mx1.example.com."], "Changed": false}}
-```
-
-يُرفض النوع غير المدعوم قبل إرسال أي طلب:
-
-```json
-{"result": "ERROR", "error": {"Code": "ADD_ZONE", "Message": "Record type \"NS\" is not supported by the DNS zone API. Supported types: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT.", "Details": "..."}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### إعادة توجيه URL
-
-```rust
-let current = dna.get_forwarding("example.com");
-let result = dna.set_forwarding("example.com", "https://www.example.org", "Standard"); // or "Frame" (masked)
-let result = dna.delete_forwarding("example.com");
-```
-
-<details>
-<summary>مثال على المخرجات لإعادة توجيه URL</summary>
-
-```json
-{"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org/landing", "ForwardType": "Frame"}}
-```
-
-إذا لم تكن إعادة التوجيه مُعدّة (تجيب البوابة بـ `Redirect information not found`)، تعيد `get_forwarding` القيمة `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`؛ وأي فشل آخر، مثل عدم وجود النطاق، يُعاد كخطأ. وتعيد `set_forwarding` القيمة `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`. وتعيد `delete_forwarding` القيمة `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`، أو `"Removed": false` إذا لم تكن هناك إعادة توجيه مُعدّة.
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### جلب تفاصيل الموزّع
-
-```rust
-let result = dna.get_reseller_details();
-let balance = dna.get_current_balance("USD"); // "USD" or "TRY"
-```
-
-<details>
-<summary>مثال على المخرجات لتفاصيل الموزّع</summary>
-
-```json
-{
-  "result": "OK",
-  "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "active": true,
-  "name": "Example Reseller",
-  "balance": "601.64",
-  "currency": "USD",
-  "symbol": "$",
-  "balances": [
-    {"balance": "601.64", "currency": "USD", "symbol": "$"},
-    {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
-  ]
-}
-```
-
-`get_current_balance`:
-
-```json
-{
-  "ErrorCode": 0,
-  "OperationMessage": "Command completed succesfully.",
-  "OperationResult": "SUCCESS",
-  "Balance": "601.64",
-  "CurrencyId": 2,
-  "CurrencyInfo": null,
-  "CurrencyName": "USD",
-  "CurrencySymbol": "$"
-}
-```
-
-يُبلغ الحساب عن رصيدَي USD وTRY فقط؛ وأي عملة أخرى (EUR وGBP، ...) تفشل مع `ErrorCode` بالقيمة `"BALANCE"`. عند الفشل تكون `OperationResult` مساوية لـ `"FAILED"`، ويحمل `ErrorCode` رمز الخطأ (مثل `"API_429"`)، وتكون `Balance` مساوية لـ `"0.00"`.
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### أدوات مساعدة (بدون شبكة)
-
-```rust
-let is_tr = dna.is_tr_tld("example.com.tr"); // true
-
-// Complete and normalise a contact the way registration does
-let contact = dna.validate_contact(&json!({
-    "FirstName": " Jo ",
-    "Phone": "+1 (202) 555-0100",
-    "Country": "Turkey"
-}));
-```
-
-<details>
-<summary>مثال على المخرجات لـ validate_contact</summary>
-
-```json
-{
-  "FirstName": "Jo",
-  "Phone": "2025550100",
-  "Country": "TR",
-  "LastName": "Isimyok",
-  "AddressLine1": "Addres yok",
-  "City": "ISTANBUL",
-  "ZipCode": "34000",
-  "PhoneCountryCode": "1",
-  "State": "ISTANBUL",
-  "Fax": "",
-  "FaxCountryCode": ""
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-## معالجة الأخطاء
-
-تعيد كل دالة شبكية قيمة؛ تحقّق من `result`:
-
-```rust
-let out = dna.get_details("missing.com");
-if out["result"] == "ERROR" {
-    println!("{}", out["error"]["Code"]);        // "API_404"
-    println!("{}", out["error"]["GatewayCode"]); // "Dna.DomainService:Domain:10007"
-    println!("{}", out["error"]["Message"]);     // "The domain name you requested could not be found. ..."
-    println!("{}", out["error"]["Details"]);
-}
-```
-
-- تستخدم أخطاء HTTP الرمز `API_<الحالة>` (`API_400` و`API_404` و`API_429` و`API_500`، ...). ويتحوّل جسم الخطأ الفارغ إلى رسالة مقروءة مثل `HTTP 429 - Too Many Requests`. وعندما ترسل البوابة رمز خطأ خاصًا بها، يحمله الغلاف أيضًا في `GatewayCode` (مثل `"Dna.DomainService:Domain:10007"`).
-- الرد 301/302 يعني بيانات اعتماد خاطئة: `Invalid API credentials`.
-- تُجمَع أخطاء التحقق الصادرة عن البوابة في `Details` مع ذكر اسم الحقل، مثل `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
-- أعطال الشبكة أخطاء، ولا تكون أبدًا نجاحًا فارغًا. تُقرأ مهلة الانتظار هكذا: `Could not reach the DomainNameAPI service: the connection timed out. (...)`؛ وتُقرأ الأعطال الأخرى هكذا: `Curl error during request: ...`. رمزها هو `CURL_<رقم خطأ curl>` (`CURL_28` لانتهاء المهلة، و`CURL_6` لـ DNS، و`CURL_7` للاتصال المرفوض)؛ أما `API_<n>` فمخصّص لحالات HTTP.
-- يفشل التحقق المحلي (نوع سجل غير مدعوم، عنوان إعادة توجيه مفقود، عدم وجود نطاقات للتحقق) قبل أي طلب برمز وصفي (`ADD_ZONE` و`SET_FORWARD` و`AVAILABILITY`، ...).
-
-### التشخيص
-
-```rust
-dna.get_request_data();        // {"url", "method", "payload"} of the last request
-dna.get_response_data();       // decoded last response, or {"raw_response": "<body>"}
-dna.get_response_headers();    // {"url", "content_type", "http_code", "total_time", "headers"}
-dna.get_parsed_response_data();// parsed body on success, {"Code", "Message", "Details"} on failure
-dna.get_last_function();       // e.g. "request:GET domains/info"
-dna.get_service_url();
-dna.set_service_url("https://ote.domainresellerapi.com/api/v1");
-```
-
-### ناقل مخصّص
-
-طبقة HTTP هي السمة (trait) `Transport`. الافتراضي هو `UreqTransport` (مكتبة `ureq` الحاجبة مع rustls، بمهلة إجمالية 30 ثانية و10 ثوانٍ للاتصال، ولا تُتبَع عمليات إعادة التوجيه). استبدله للوكلاء (proxies) أو العملاء المخصّصين أو الاختبارات:
-
-```rust
-use domainnameapi::{HttpRequest, HttpResponse, Transport, TransportError};
-
-struct MyTransport;
-impl Transport for MyTransport {
-    fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
-        // perform req.method on req.url with req.headers and req.body
-        Ok(HttpResponse { status: 200, body: "{}".into(), headers: vec![] })
+    fn validate(&self, v: &mut Validator) {
+        v.required("domainName", &self.domain_name);
     }
 }
 
-dna.set_transport(Box::new(MyTransport));
+let notes = client.send(&DomainNotesRequest { domain_name: "example.com".into() }).await?;
 ```
 
-## وضع الاختبار
+<div dir="rtl">
 
-مرّر `true` (أو `"true"` أو `"1"` أو `"on"` أو `"yes"`) كمعامل ثالث للمُنشئ لاستخدام بيئة الاختبار OTE على `https://ote.domainresellerapi.com/api/v1`. تذهب الاستدعاءات الحية إلى `https://api.domainresellerapi.com/api/v1`.
+يحصل طلبك على كل ما تحصل عليه الطلبات المدمجة: بيانات الاعتماد، وإعادة المحاولة بحسب فئة الأمان، وتنظيم وتيرة الطلبات،
+ووضع القراءة فقط، ومعالجة الأخطاء. للتغيير، استخدم `Endpoint::post(path, OperationSafety::Write)` (أو `Billable` أو `Destructive`)،
+ولا تُضف `.idempotent()` إلا عندما يكون إرساله مرتين غير ضار.
 
-## الاختبارات
+## الأخطاء
 
-لا تحتاج مجموعة الاختبارات إلى شبكة ولا إلى بيانات اعتماد:
+كل طلب فاشل يُعيد `Error`، حتى عندما يفشل الطلب في الفحوص ولا يُرسَل شيء.
+
+</div>
+
+```rust
+use domainnameapi::ErrorKind;
+
+match client.domains().renew("example.com", 1).await {
+    Ok(result) => println!("{} {}", result.success, result.message),
+    Err(e) if e.kind() == ErrorKind::Validation => {
+        println!("{}: {}", e.code(), e.message());   // Dna.DomainService:Domain:10007: ...
+        for field in e.validation_errors() {
+            println!("  {field}");
+        }
+    }
+    Err(e) if e.is_outcome_unknown() => {
+        // فشل طلب مدفوع أو مُغيِّر بسبب الشبكة: ربما وصل إلى API.
+        // تحقّق من الحالة قبل إرساله مرة أخرى.
+        let info = client.domains().info("example.com").await?;
+    }
+    Err(e) => return Err(e.into()),
+}
+```
+
+<div dir="rtl">
+
+| الدالة | المعنى |
+|---|---|
+| `kind()` | تصنيف ثابت (الجدول أدناه). اتخذ قراراتك بناءً عليه، لا على الرسالة. |
+| `code()` | رمز الخطأ من API (مثل `Dna.DomainService:Domain:10007`)، أو أحد رموز الحزمة أدناه. الرموز الشائعة متاحة ثوابتَ في `domainnameapi::codes`. |
+| `message()` | ما الذي حدث. تُستبدل الرسائل الجاهزة العامة بتفاصيل API. |
+| `status()` | حالة HTTP، أو `None` إن لم تصل أي إجابة. |
+| `details()`, `validation_errors()` | تفاصيل إضافية ومشكلات على مستوى الحقول (من API، أو من الفحوص التي تسبق الإرسال). |
+| `correlation_id()` | قيمة `X-Correlation-Id` من البوابة. اذكرها عند التواصل مع الدعم. |
+| `hint()` | اقتراح قصير بما يجب فعله بعد ذلك. |
+| `is_retryable()` | هل يمكن أن ينجح تكرار الطلب نفسه لاحقًا. |
+| `is_outcome_unknown()` | ربما نُفّذ الطلب: فشل تغيير بسبب الشبكة، أو أفادت API بأن جهة التسجيل ربما نفّذته بالفعل. |
+| `is_not_found()`, `is_insufficient_balance()` | اختصارات للحالات الشائعة. |
+| `operation()`, `safety()` | الطلب الفاشل (`POST /api/v1/domains/renew`) وفئة الأمان الخاصة به. |
+| `retry_after()`, `response_body()` | قيمة `Retry-After` من البوابة والإجابة الخام. |
+
+ينفّذ `Error` السمتين `std::error::Error` و`Display` (‏`[CODE] message (HTTP 400); field: problem`)، لذا يعمل
+مع `?` و`anyhow` و`thiserror`.
+
+| `kind()` | متى |
+|---|---|
+| `Auth` | بيانات اعتماد خاطئة أو مفقودة، أو موزّع غير معروف أو موقوف في هذه البيئة (401، إعادة توجيه). |
+| `Forbidden` | مصادَق عليه لكن غير مسموح له (403). |
+| `NotFound` | النطاق أو جهة الاتصال أو الشهادة أو الطلب أو أي مورد آخر غير موجود (404). |
+| `Validation` | رفضت API المدخلات أو فشلت قاعدة عمل: حقل غير صالح، أو نطاق مقفل، أو رصيد غير كافٍ (400، 422). |
+| `Conflict` | حالة المورد لا تسمح بالعملية (409). |
+| `RateLimited` | ما زال الطلب محدودًا بمعدل الطلبات بعد إعادة المحاولة التلقائية (429). |
+| `Server` | فشل من جهة الخادم (5xx). غالبًا مؤقت. |
+| `Network`, `Timeout` | لا إجابة: DNS أو TLS أو وكيل (proxy) أو إعادة ضبط الاتصال، أو لا إجابة خلال المهلة الزمنية. |
+| `InvalidInput` | فشل الطلب في الفحوص، أو أن أحد إعدادات العميل غير صالح؛ ولم يُرسَل شيء. |
+| `ReadOnly` | مُنع بسبب وضع القراءة فقط؛ ولم يُرسَل شيء. |
+| `Unknown` | أي حالة أخرى، بما فيها إجابة لم تستطع الحزمة قراءتها. |
+
+تُعطي `ErrorKind::as_str()` الأسماء المستخدمة في CLI (‏`auth`، `not_found`، `rate_limited`، ...). الرموز التي تضبطها الحزمة بنفسها:
+
+| الرمز | المعنى |
+|---|---|
+| `INVALID_RESELLER` | أعادت البوابة التوجيه إلى صفحة الإيقاف: معرّف الموزّع غير معروف أو غير نشط أو موقوف **في هذه البيئة**. |
+| `INVALID_API_KEY` | المفتاح لا يطابق الموزّع. مفاتيح الإنتاج وOTE مختلفة. |
+| `MISSING_API_KEY`, `MISSING_RESELLER_ID`, `NO_CREDENTIALS` | إحدى بيانات الاعتماد فارغة. |
+| `SUBRESELLER_NOT_ALLOWED` | لا يمكن لحسابات الموزّعين الفرعيين استخدام API. استخدم بيانات اعتماد الموزّع الرئيسي. |
+| `UNAUTHORIZED` | أي 401 آخر. |
+| `RATE_LIMITED` | 429 بعد إعادة المحاولة. |
+| `NETWORK`, `TIMEOUT` | لم تصل أي إجابة. |
+| `READ_ONLY` | مُنع بسبب وضع القراءة فقط. |
+| `INVALID_INPUT`, `INVALID_CONFIGURATION` | فشل أحد الطلبات في الفحوص، أو أن أحد إعدادات العميل غير صالح. |
+| `EMPTY_RESPONSE`, `INVALID_RESPONSE` | كانت الإجابة الناجحة فارغة أو تعذّرت قراءتها. |
+| `HTTP_<status>` | لم ترسل API رمز خطأ. |
+
+## الأمان وإعادة المحاولة وحدود معدل الطلبات
+
+لكل طلب فئة أمان، وهي نفسها التي تستخدمها أداة `dna` CLI:
+
+| `OperationSafety` | تعني | أمثلة |
+|---|---|---|
+| `Read` | بلا آثار جانبية، حتى لو استخدمت API الأسلوب POST أو PUT | البحث، التفاصيل، القوائم، فحوص التجديد والنقل، إنشاء CSR، حالة الشهادة |
+| `Write` | تغيير مجاني يمكن التراجع عنه | سجلات DNS، القفل، الخصوصية، خوادم الأسماء، جهات الاتصال |
+| `Billable` | يخصم من رصيدك | التسجيل، التجديد، النقل، الاستعادة، شراء SSL وتجديده، طلب استضافة |
+| `Destructive` | يحذف شيئًا أو يصعب التراجع عنه | حذف سجل DNS، إزالة DNSSEC، إلغاء شهادة |
+
+- **وضع القراءة فقط** (‏`read_only(true)` أو `DNA_READ_ONLY=true`) يمنع كل ما ليس `Read` قبل إرساله.
+  استخدمه أثناء الاستكشاف، وفي التقارير ولوحات المعلومات.
+- **إعادة المحاولة.** تُعاد محاولة إجابات 429 دائمًا، مع احترام `Retry-After`. وهذا آمن حتى للطلبات المدفوعة، لأن
+  البوابة ترفضها قبل تنفيذ أي شيء. أما أخطاء الشبكة والمهلات وإجابات 502/503/504 فلا تُعاد محاولتها إلا لعمليات القراءة
+  ولعمليات الكتابة التي تصنّفها CLI بأنها متساوية القوى (idempotent): القفل، وفك القفل، والخصوصية، وخوادم الأسماء، وتحديث DNS
+  وتطبيقه. لا يُرسَل التسجيل أو التجديد مرتين أبدًا.
+- **تنظيم وتيرة الطلبات.** تسمح البوابة بـ 5 طلبات في الثانية لكل مفتاح، و2 في الثانية لعمليات البحث عن النطاقات. يباعد العميل
+  بين الطلبات ليبقى ضمن هذه الحدود، ويباعد بين استدعاءات منطقة DNS بثانية واحدة. معلومات النطاق وقائمة TLD
+  غير محدودتين بمعدل الطلبات.
+- **الحصة المرنة (soft quota).** تكلّف عمليات البحث والاستعلام عن المعلومات نقطة واحدة، وكل ما عداها 10 نقاط. بعد تجاوز 200 نقطة تبطئ البوابة كل
+  طلب بما يصل إلى 5 ثوانٍ؛ وتتناقص النقاط بنسبة 20% في الدقيقة. تعرض `send_with_response` الحالة في `quota`.
+
+## الشيفرة غير المتزامنة والشيفرة الحاجبة
+
+الحزمة غير متزامنة (async) وتحتاج إلى بيئة تشغيل Tokio (التي يشغّلها `#[tokio::main]`، أو بيئة خادمك). الـ futures
+من النوع `Send`، لذا تعمل داخل `tokio::spawn` وفي معالجات axum وactix. يمكن قراءة القوائم صفحةً صفحة (`list`) أو على هيئة
+`Stream` من العناصر (`list_all`)، وهو لا يجلب الصفحة التالية إلا عند الحاجة إليها:
+
+</div>
+
+```rust
+use futures_util::TryStreamExt;
+
+let expiring: Vec<Domain> = client
+    .domains()
+    .list_all(DomainListRequest::new())
+    .try_filter(|d| std::future::ready(d.remaining_days < 30))
+    .try_collect()
+    .await?;
+```
+
+<div dir="rtl">
+
+لا توجد API حاجبة (blocking): فهي ستضاعف حجم الواجهة مقابل فائدة قليلة. في الشيفرة المتزامنة، شغّل الاستدعاءات على
+بيئة تشغيل:
+
+</div>
+
+```rust
+let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+let account = runtime.block_on(client.account().get())?;
+```
+
+<div dir="rtl">
+
+## اختبار شيفرتك
+
+لا تحتاج الحزمة إلا إلى نقطة نهاية HTTP. لاختبار الشيفرة التي تستخدمها دون استدعاء API، وجّه `base_url` إلى خادم
+محلي (مثلًا خادم مبني بـ `wiremock` أو `httpmock` أو `axum`) وأوقف تنظيم وتيرة الطلبات:
+
+</div>
+
+```rust
+let client = Client::builder()
+    .credentials("test", "test")
+    .base_url(format!("http://{}", server_address))
+    .pace_requests(false)
+    .build()?;
+```
+
+<div dir="rtl">
+
+تنفّذ النماذج `Default` و`Deserialize`، لذا يمكن أن تأتي بيانات الاختبار من JSON؛ ويمكن إنشاء الأخطاء لكائناتك الوهمية (mocks)
+عبر `Error::new(kind, code, message)`. للاختبار على API الحقيقية، استخدم OTE بمفتاحها الخاص.
+
+## بنية المشروع
+
+</div>
+
+```
+src/
+├── lib.rs           توثيق الحزمة (crate) وإعادة التصدير (re-exports)
+├── client.rs        Client, ClientBuilder, Environment: الإرسال، إعادة المحاولة، تنظيم الوتيرة، تحليل الأخطاء، list_all
+├── request.rs       Request, PagedRequest, Endpoint, OperationSafety, Query, JsonBody, Validator, Page, Empty
+├── error.rs         Error, ErrorKind, codes
+├── de.rs            فك ترميز متسامح ووحدات الماكرو التي تعرّف النماذج والقيم المُعدَّدة (داخلي)
+├── account.rs       AccountClient     الأرصدة والملف الشخصي والمعاملات
+├── contacts.rs      ContactsClient    معرّفات جهات الاتصال
+├── domains/         DomainsClient     النطاقات، إضافةً إلى forwarding() و child_name_servers() و documents()
+├── dns.rs           DnsClient         سجلات المنطقة
+├── dnssec.rs        DnssecClient      سجلات DS
+├── ssl.rs           SslClient         الشهادات
+├── hosting.rs       HostingClient     حزم الاستضافة وخدماتها
+├── orders.rs        OrdersClient      الطلبات
+└── products.rs      ProductsClient    نطاقات TLD ومنتجات SSL والأسعار
+tests/               اختبارات على API وهمية، واختبار تغطية المواصفة، و testdata/openapi.json
+examples/            برامج قابلة للتشغيل
+```
+
+<div dir="rtl">
+
+لكل وحدة (module) مجال الشكل نفسه: النماذج والقيم المُعدَّدة (enums) الخاصة بإجاباتها، ونوع طلب واحد لكل عملية
+(`XxxRequest`)، و`XxxClient`.
+
+## التطوير
+
+</div>
 
 ```bash
-cargo test
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test                    # اختبارات الوحدة وAPI الوهمية والمواصفة والتوثيق؛ لا يستدعي أيٌّ منها API الحقيقية
+cargo build --examples
 ```
 
-تحتوي على اختبارات وحدة لطبقة HTTP، وتحويل الأخطاء، وإخفاء بيانات القياس عن بُعد، والأدوات المساعدة، إضافةً إلى اختبار توافق يعيد تشغيل جميع حالات php-dna البالغ عددها 134 من `tests/conformance/` ويتحقق من أن كل طلب مُرسَل وكل قيمة مُعادة يطابقان php-dna.
+<div dir="rtl">
 
-## الإبلاغ عن الأخطاء (القياس عن بُعد)
+إن لم تكن لديك سلسلة أدوات (toolchain) محلية، فاستخدم Docker:
 
-عندما يفشل استدعاء API، يمكن للمكتبة إرسال تقرير خطأ إلى نظام تتبّع الأخطاء الخاص بـ DomainNameAPI (Sentry). وتُرسَل نسبة عشوائية صغيرة من الاستدعاءات الناجحة (4%، إضافةً إلى كل استدعاء يستغرق أكثر من ثانية) كسجل أداء. يساعد هذا DomainNameAPI على اكتشاف المشكلات وإصلاحها. الإبلاغ عن الأخطاء **مفعّل افتراضيًا**.
+</div>
 
-**ما الذي يُرسَل:**
-
-- رمز الخطأ ورسالته
-- مسار نقطة النهاية المستدعاة وطريقة HTTP
-- مدة الاستدعاء
-- اسم التطبيق (`DomainNameAPI-Rust`) وإصدار المكتبة
-- معرّف الموزّع واسم النطاق
-- عنوان IP العام للخادم (يُستعلم عنه في الخلفية عبر `api.ipify.org`)
-- اسم مستخدم نظام التشغيل
-- طلب API واستجابته، بما في ذلك بيانات جهات اتصال النطاق؛ تُخفى بيانات الاعتماد فقط — تُستبدل رموز EPP/auth ومفاتيح API وكلمات المرور والأسرار والرموز المميزة بـ `***`
-
-**ما لا يُرسَل أبدًا:** رموز EPP/auth أو مفاتيح API أو كلمات المرور أو الرموز المميزة بصيغة مقروءة.
-
-تُرسَل التقارير من خيط (thread) في الخلفية بمهل قصيرة؛ ولا تحجب استدعاءك أبدًا ولا تتسبب في فشله. ولا يُبلَّغ عن الأخطاء المتوقعة مثل "النطاق غير موجود" أو "الرصيد غير كافٍ".
-
-**لماذا وإلى متى:** تُستخدم البيانات فقط لقياس الاستخدام والتشخيص المبكر للمشكلات، وتُحفظ لمدة 30 يومًا على خادم Sentry الخاص بـ DomainNameAPI، ثم تُحذف تلقائيًا.
-
-**كيفية إيقافه أو تقليله:**
-
-```rust
-let mut dna = DomainNameApi::new(reseller_id, api_key, false);
-dna.set_error_reporting_enabled(false); // nothing is sent
-
-// or keep it on but send only the error code and message, endpoint,
-// timing, versions and reseller ID (no request/response data, domain, IP or user name)
-dna.set_telemetry_minimal(true);
+```bash
+docker run --rm -v "$PWD":/src -w /src rust:1.83 sh -c 'rustup component add rustfmt clippy; cargo fmt --check; cargo clippy --all-targets -- -D warnings; cargo test'
 ```
 
-> 🔒 **الأمان:** التحقق من شهادات TLS مفعّل. على خادم ذي حزمة CA قديمة يمكن تعطيله عبر `dna.set_ssl_verification(false);` — وهذا غير مُستحسن؛ تحديث حزمة CA هو الحل الأفضل.
+<div dir="rtl">
 
-## رموز العودة والأخطاء مع تفسيراتها
+لا تستدعي الاختبارات API الحقيقية أبدًا: فهي تستخدم خادم HTTP صغيرًا على 127.0.0.1 (`tests/common`). يشغّلها CI على
+أدنى إصدار مدعوم من Rust ‏(1.83) وعلى أحدث إصدار مستقر.
 
-| الرمز | الوصف | التفاصيل |
-|-------|--------|-----------|
-| 1000 | تم تنفيذ الأمر بنجاح | العملية ناجحة |
-| 1001 | تم تنفيذ الأمر بنجاح؛ الإجراء معلق | العملية ناجحة ولكنها في قائمة الانتظار للإكمال |
-| 2003 | معلمة مطلوبة مفقودة | خطأ في المعلمات، مثل عدم إدخال رقم الهاتف في معلومات الاتصال |
-| 2105 | الكائن غير مؤهل للتجديد | حالة النطاق غير مناسبة للتجديد، مقفلة للتحديثات |
-| 2200 | خطأ في المصادقة | خطأ في التفويض، رمز الأمان خاطئ أو النطاق مسجل لدى شركة تسجيل أخرى |
-| 2302 | الكائن موجود | اسم النطاق أو معلومات خادم الأسماء موجودة في قاعدة البيانات، لا يمكن التسجيل |
-| 2303 | الكائن غير موجود | اسم النطاق أو معلومات خادم الأسماء غير موجودة في قاعدة البيانات، يجب إنشاء تسجيل جديد |
-| 2304 | حالة الكائن تمنع العملية | حالة النطاق غير مناسبة للتحديث، مقفلة للتحديثات |
+الملف `tests/testdata/openapi.json` هو وثيقة API التي تضمّنها أداة `dna` CLI. يتحقق `tests/spec.rs` من أن لكل عملية
+فيه نوع طلب واحدًا بالضبط بالأسلوب والمسار وفئة الأمان وخاصية تساوي القوى (idempotency) نفسها في CLI، ومن أن كل طلب
+لا يرسل إلا معاملات استعلام وخصائص جسم تصفها الوثيقة (بما فيها الكائنات المتداخلة، مع وجود الخصائص المطلوبة)،
+ومن أن أنواع الإجابات تستخدم الأسماء الواردة في الوثيقة. عندما تضيف API عملية جديدة، حدّث الوثيقة، وسيفشل الاختبار
+إلى أن يوجد نوع الطلب.
 
-| الرمز | التفاصيل                                                                                                                               |
-|------|---------------------------------------------------------------------------------------------------------------------------------------|
-| 101  | خطأ النظام مفصل لـ ({0})!                                                                                                              |
-| 102  | أخطاء متعددة مفصلة لـ ({0})!                                                                                                           |
-| 103  | أخطاء غير معروفة مفصلة لـ ({0})!                                                                                                        |
-| 200  | أمر API غير موجود ({0})!                                                                                                              |
-| 210  | خدمة API غير موجودة ({0})!                                                                                                            |
-| 211  | مزود خدمة API غير مُعيَّن!                                                                                                             |
-| 300  | الموزع غير موجود!                                                                                                                     |
-| 301  | عنوان IP الحالي الخاص بك غير مخول للوصول. تأكد من أنك تتصل من عنوان IP مخول وحاول مرة أخرى                                              |
-| 310  | TLD غير مدعوم!                                                                                                                        |
-| 320  | API غير موجود!                                                                                                                        |
-| 321  | العملة غير مدعومة!                                                                                                                    |
-| 330  | المعاملات المطلوبة غير مُعيَّنة ({0}).                                                                                                  |
-| –    | تأكد من إرسال جميع كائنات الاتصال بالكامل                                                                                                |
-| 340  | تعريف السعر غير موجود ({0}[{1}]-{2}{3}).                                                                                              |
-| 350  | رصيد الموزع غير كافٍ. (معرف الموزع : {0} - الرصيد الحالي : {1} {2}).                                                                   |
-| 350  | عملة المحاسبة غير متطابقة أو الرصيد غير كافٍ.                                                                                          |
-| 360  | طلب API غير صالح للحقل ({0}).                                                                                                          |
-| 360  | تم تجاوز حصة API!                                                                                                                     |
-| 361  | خطأ في التحكم في المعدل!                                                                                                               |
-| 362  | النطاق المميز غير متاح للتسجيل الآن.                                                                                                    |
-| 363  | تم إلغاء العملية لأن النطاق في فترة التجديد الآلي                                                                                       |
-| 364  | هذا النطاق غير متاح حاليًا للمعاملة بسبب مشكلة في السجل                                                                               |
+## الترقية من 1.x
 
-| الرمز | التفاصيل                                                                                       |
-|------|----------------------------------------------------------------------------------------------|
-| 400  | اتصال غير صالح ({0}).                                                                          |
-| 401  | لا يمكن مزامنة معلومات الاتصال.                                                                |
-| 402  | لا يوجد وصول لمعلومات الاتصال من السجل.                                                        |
-| 403  | النظام يحتوي على معلومات مفقودة. أدخل معلوماتك الافتراضية أو اتصل بفريق الدعم.                     |
-| 404  | لا يمكن تحديث اتصال النطاق. إذن من السجل.                                                       |
-| 410  | الاتصال غير موجود.                                                                            |
-| 410  | الاتصال غير موجود ({0}).                                                                       |
-| 420  | أمر Api غير صالح للاتصال {0}.                                                                 |
-| 430  | API الاتصال غير موجود.                                                                        |
-| 440  | الاتصال غير متزامن.                                                                           |
-| 450  | اتصالات النطاق كثيرة جداً.. !                                                                  |
-| 451  | فشل في المتابعة مع تحديث الاتصال.                                                              |
+الإصدار 2.0 حزمة SDK جديدة. كان الإصدار 1.x نسخة منقولة من مكتبة PHP: عميل `DomainNameApi` حاجب (blocking) يُعيد
+أغلفة `serde_json::Value` غير مكتوبة بأنواع. أما 2.0 فغير متزامن (async)، مع طلبات ونماذج مكتوبة بأنواع صريحة، و`Result<T, Error>`، وبانٍ (builder).
 
-| الرمز | التفاصيل                                                                                                                               |
-|------|---------------------------------------------------------------------------------------------------------------------------------------|
-| 500  | معرف النطاق غير صالح.                                                                                                                 |
-| 500  | معرف النطاق غير صالح ({0}).                                                                                                           |
-| 501  | لا يمكن مزامنة النطاق ({0})                                                                                                          |
-| 502  | فشل النقل الداخلي                                                                                                                    |
-| 503  | تسجيل النطاق غير متاح.                                                                                                               |
-| 504  | معلومات النطاق غير متطابقة .. قبل :{0}                                                                                               |
-| 505  | أدخل عنوان IP.                                                                                                                       |
-| 506  | تم بدء نقل النطاق لكن لا يمكن قراءة معلومات الاتصال ..                                                                              |
-| 507  | خطأ في التفويض.                                                                                                                      |
-| 510  | النطاق غير موجود.                                                                                                                    |
-| 511  | لا يمكن العثور على النطاقات المنتهية الصلاحية.                                                                                        |
-| 512  | النطاق غير قابل للتجديد.                                                                                                             |
-| 513  | النطاق ليس في حالة قابلة للتحديث. يجب أن يكون نشطاً ليتم تحديثه                                                                      |
-| 514  | فترة الاسترداد متوقعة.                                                                                                               |
-| 520  | أمر Api غير صالح للنطاق "{0}".                                                                                                       |
-| 530  | فترة النطاق غير صالحة. يجب أن تكون الفترة من {0} إلى {1} سنة. الفترة المطلوبة هي {2} سنة.                                         |
-| 540  | لا يمكن تمديد النطاق إلى ما بعد {0} سنة من التاريخ الحالي.                                                                          |
-| 550  | اسم النطاق غير صالح. يجب أن يكون النطاق من {0} إلى {1} حرف. اسم النطاق المطلوب هو {2} حرف.                                     |
-| 560  | عدد خوادم الأسماء غير صالح. يجب أن يحتوي النطاق على {0} إلى {1} خادم أسماء. عدد خوادم الأسماء المطلوب هو {2}.                    |
-| 561  | لم يتم العثور على معلومات خادم الأسماء في الطلب الوارد                                                                             |
-| 570  | Idn غير مدعوم لـ TLD "{0}".                                                                                                          |
-| 571  | الفترة غير صالحة.                                                                                                                   |
-| 572  | الأمر غير صالح.                                                                                                                     |
-| 573  | أسماء النطاقات غير موجودة.                                                                                                           |
-| 574  | أسماء TLD غير موجودة.                                                                                                               |
-| 575  | النطاق ليس في حالة قابلة للتحديث. يجب أن يكون نشطاً لتحديث خوادم الأسماء                                                            |
-| 576  | يمكن تجديد النطاق في الشهر الأخير قبل تاريخ انتهاء الصلاحية                                                                        |
-| 580  | النقل غير مدعوم لـ TLD "{0}".                                                                                                        |
-| 581  | خادم الأسماء الفرعي غير موجود                                                                                                        |
-| 582  | تم بدء النقل بواسطة موزع آخر.                                                                                                        |
-| 583  | النقل غير مُعيَّن. يرجى الاتصال بفريق الدعم.                                                                                         |
-| 584  | حالة الكائن تمنع العملية                                                                                                             |
-| 590  | رمز التفويض مطلوب لهذا النقل.                                                                                                        |
-| 591  | رمز التفويض غير صالح.                                                                                                               |
-| 592  | قفل النقل موجود على النطاق.                                                                                                          |
-| 593  | لا يمكن نقل النطاق، معلومات الحالة وقفل النقل يجب أن تتوافق مع المعايير المطلوبة. (معلومات الحالة: #ok)                           |
-| 594  | لا يمكن حل عنوان خادم أسماء النطاق ({0})                                                                                            |
-| 595  | لا يمكن قراءة معلومات الاتصال (whois.registrar.tld) تأكد من أن حالة حماية الخصوصية مفتوحة                                          |
-| 596  | لا يمكن التحقق من معلومات الاتصال                                                                                                   |
-| 597  | TLD غير موجود                                                                                                                       |
-| 598  | حدث خطأ غير معروف                                                                                                                   |
-| 599  | إعادة توجيه النطاق غير موجود                                                                                                          |
+| 1.x | 2.0 |
+|---|---|
+| `DomainNameApi::new(id, key, true)` | `Client::builder().credentials(id, key).environment(Environment::Ote).build()?` |
+| `dna.get_reseller_details()`, `dna.get_current_balance(..)` | `client.account().get()` / `profile()` |
+| `dna.check_availability(..)` | `client.domains().search(..)` / `bulk_search(..)` |
+| `dna.get_list(..)` | `client.domains().list(..)` / `list_all(..)` |
+| `dna.get_details(domain)` | `client.domains().info(domain)` |
+| `dna.register_with_contact_info(..)` | `client.domains().register_with_contacts(..)` |
+| `dna.renew(domain, period)` | `client.domains().renew(domain, years)` |
+| `dna.transfer(domain, epp_code, period)` | `client.domains().transfer(DomainTransferRequest::new(domain, auth_code).years(years))` |
+| `dna.check_transfer(domain, auth_code)` | `client.domains().transfer_check(domain, auth_code)` |
+| `dna.modify_name_server(..)` | `client.domains().set_name_servers(..)` |
+| `dna.enable_theft_protection_lock(domain)` | `client.domains().lock(domain)` |
+| `dna.modify_privacy_protection_status(..)` | `client.domains().set_privacy(..)` |
+| `dna.save_contacts(..)` | `client.domains().update_contacts(..)` |
+| `dna.add_child_name_server(..)` | `client.domains().child_name_servers().add(..)` |
+| `dna.get_resource_records(domain)` | `client.dns().list(domain)` |
+| `dna.add_resource_record(..)` | `client.dns().add(..)` |
+| `dna.set_resource_record_set(..)` | `client.dns().update(..)` |
+| `dna.apply_resource_records(domain)` | `client.dns().apply(domain)` |
+| `dna.set_forwarding(..)` | `client.domains().forwarding().set(..)` |
+| `dna.get_tld_list(..)` | `client.products().all_tlds(..)` |
+| `result["result"] == "ERROR"` | `Err(e)` مع `e.kind()` و`e.code()` |
+
+استدعاءات الموافقة على النقل وإلغائه ورفضه (approve/cancel/reject) واستدعاء `sync_from_registry` في 1.x ليست جزءًا من
+وثيقة REST API، ولا مقابل لها في 2.0. يبقى الحد الأدنى لإصدار Rust (MSRV) هو 1.83؛ وحلّت `reqwest` محل `ureq`، لذا يحتاج 2.0
+إلى بيئة تشغيل Tokio. كان الإصدار 1.x يرسل تقارير الأخطاء إلى Sentry؛ أما 2.0 فلا يرسل شيئًا إلى أي جهة سوى API.
+
+## الروابط
+
+- [`dna` CLI وخادم MCP](https://github.com/domainreseller/cli): API نفسها من الطرفية ومن وكلاء الذكاء الاصطناعي.
+- [توثيق API](https://www.domainnameapi.com/docs/)
+- [سجل التغييرات](CHANGELOG.md)
 
 ## الترخيص
 
-رخصة Apache 2.0 — راجع [LICENSE](LICENSE).
+Apache License 2.0. راجع [LICENSE](LICENSE).
+
+</div>

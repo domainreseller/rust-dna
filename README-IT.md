@@ -10,1094 +10,779 @@
   <a href="README-IT.md"> | IT <img style="padding-top: 8px" src="https://raw.githubusercontent.com/yammadev/flag-icons/master/png/IT.png" alt="IT" height="20" /></a>
 </div>
 
-# rust-dna — client DomainNameAPI per Rust
+# DomainNameAPI Rust SDK (rust-dna)
 
-Client Rust per l'API REST del registrar di domini DomainNameAPI. È un porting fedele della libreria PHP di riferimento [php-dna](https://github.com/domainreseller/php-dna): gli stessi metodi, le stesse richieste in rete e gli stessi valori di ritorno. Ogni porting viene verificato con le 134 fixture di conformità di php-dna.
+<p>
+  <a href="https://github.com/domainreseller/rust-dna/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/domainreseller/rust-dna/ci.yml?branch=main&label=CI&style=flat-square" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-0B8DB5?style=flat-square" alt="Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/Rust-1.83%2B-0B8DB5?style=flat-square" alt="Rust 1.83+">
+</p>
 
-## 📦 Download — usa sempre le Releases!
-
-⬇️ **Scarica l'ultima versione testata qui: https://github.com/domainreseller/rust-dna/releases/latest**
-
-> ⚠️ **Non** usare il pulsante verde **Code → Download ZIP** — scarica il ramo di sviluppo grezzo. I pacchetti di release sono versionati, testati e pronti per la produzione.
-
-## Guida all'installazione e all'integrazione
-
-### Requisiti minimi
-
-- Rust 1.83 o successivo (edizione 2021)
-- Nessun runtime asincrono: l'API è bloccante
-- Dipendenze di runtime: `ureq` (HTTP, TLS rustls), `rustls` e `serde_json`. Non serve OpenSSL.
-
-### Installazione
-
-**A) Dipendenza Git (fissata a un tag di release)**
-
-```toml
-[dependencies]
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.1" }
-```
-
-**B) Release scaricata**
-
-Estrai l'archivio della release accanto al tuo progetto e indica a Cargo dove si trova:
-
-```toml
-[dependencies]
-domainnameapi = { path = "../rust-dna" }
-```
-
-La crate riesporta `serde_json::Value` e la macro `json!`, quindi non è necessario aggiungere `serde_json` (puoi farlo se preferisci).
-
-## 🔑 Credenziali API — Reseller ID e API Key
-
-La libreria comunica con l'API REST di DomainNameAPI e richiede esattamente due credenziali, passate al costruttore:
-
-| Parametro | Valore |
-|---|---|
-| Primo | Reseller ID — UUID come `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
-| Secondo | API Key |
-
-> 💡 Trovi il tuo **Reseller ID** e la tua **API Key** nel pannello DomainNameAPI, sotto **Impostazioni API**.
-> ⚠️ Queste sono **credenziali API** — i dati di accesso al pannello **non** funzionano qui.
+L'SDK Rust ufficiale per la piattaforma reseller di [Domain Name API](https://www.domainnameapi.com). Copre tutte le
+67 operazioni dell'API REST con richieste e modelli tipizzati: domini, contatti, DNS, DNSSEC, certificati SSL,
+hosting, ordini, prodotti e il tuo account.
 
 ```rust
-use domainnameapi::DomainNameApi;
+let client = Client::builder().credentials(reseller_id, api_key).environment(Environment::Ote).build()?;
 
-let reseller_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
-let api_key = "your-api-key";
-
-// Live environment
-let mut dna = DomainNameApi::new(reseller_id, api_key, false);
-
-// Test (OTE) environment
-let mut dna = DomainNameApi::new(reseller_id, api_key, true);
+let search = client.domains().search("example.com").await?;
+if search.info.is_available() {
+    let request = DomainRegisterWithContactsRequest::new("example.com", DomainContacts::same(contact), ["tr.apiname.com", "eu.apiname.com"]);
+    client.domains().register_with_contacts(request).await?;
+}
 ```
 
-Entrambe le credenziali vengono ripulite dagli spazi iniziali e finali. Il terzo argomento accetta anche stringhe, perché i pannelli spesso salvano le caselle di controllo come testo: `"true"`, `"1"`, `"on"` e `"yes"` (senza distinzione tra maiuscole e minuscole) selezionano l'ambiente di test, qualsiasi altro valore (compresi `"false"` e `"off"`) seleziona l'ambiente live.
+- **Tutto tipizzato.** Ogni operazione è un tipo di richiesta e ogni risposta una struct documentata. Niente mappe, niente parsing JSON.
+- **Le tue richieste.** Ogni richiesta implementa il trait `Request`. Implementalo per un endpoint che l'SDK non copre ancora.
+- **Sicuro con il denaro.** Ogni richiesta dichiara se legge, scrive, addebita il tuo saldo o elimina qualcosa. Le richieste a pagamento non vengono mai ripetute e la modalità di sola lettura blocca qualsiasi modifica.
+- **Resilienza integrata.** I limiti di richieste vengono rispettati automaticamente, le risposte 429 vengono ritentate e gli errori di rete vengono ritentati per le letture.
+- **Errori chiari.** Un solo tipo `Error` con un tipo stabile, il codice di errore dell'API, gli errori di validazione per campo, il correlation ID e un suggerimento.
+- **Rust moderno.** Async su Tokio, `reqwest` con rustls (senza OpenSSL), modelli serde, paginazione lazy come `Stream`, un client clonabile `Send + Sync`, `#![deny(missing_docs)]`.
+- **Riservato.** Nessuna telemetria. Nulla lascia il tuo processo, tranne le richieste che invii all'API.
+
+È la controparte Rust di [`dna`, la CLI di Domain Name API](https://github.com/domainreseller/cli): stesso documento
+API, stesse operazioni e gruppi, stesse classi di sicurezza, regole di retry e codici di errore.
+
+## Indice
+
+- [Installazione](#installazione)
+- [Credenziali](#credenziali)
+- [Avvio rapido](#avvio-rapido)
+- [Configurazione](#configurazione)
+- [Utilizzo](#utilizzo): [account](#account) · [domini](#domini) · [contatti](#contatti) · [DNS](#dns) · [DNSSEC](#dnssec) · [SSL](#ssl) · [hosting](#hosting) · [ordini e prodotti](#ordini-e-prodotti)
+- [Richieste e il trait `Request`](#richieste-e-il-trait-request)
+- [Errori](#errori)
+- [Sicurezza, retry e limiti di richieste](#sicurezza-retry-e-limiti-di-richieste)
+- [Codice asincrono e bloccante](#codice-asincrono-e-bloccante)
+- [Testare il tuo codice](#testare-il-tuo-codice)
+- [Struttura del progetto](#struttura-del-progetto)
+- [Sviluppo](#sviluppo)
+- [Passare dalla 1.x](#passare-dalla-1x)
+
+## Installazione
+
+> [!IMPORTANT]
+> **Usa sempre l'[ultima release](https://github.com/domainreseller/rust-dna/releases/latest).** I pacchetti delle release sono versionati e testati.
+> Il pulsante verde **Code → Download ZIP** scarica invece il branch di sviluppo.
+
+```toml
+[dependencies]
+domainnameapi = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+futures-util = "0.3"   # per leggere gli stream di list_all
+```
+
+Finché il crate non è pubblicato su crates.io, prendilo dal tag della release:
+
+```toml
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.0.0" }
+```
+
+**Requisiti:** Rust 1.83 o successivo e un runtime Tokio. Le dipendenze sono `reqwest` (con rustls, senza OpenSSL),
+`serde`/`serde_json`, `tokio` (solo i timer), `futures-util`, `chrono`, `base64` e `httpdate`.
+
+## Credenziali
+
+L'API autentica ogni richiesta con due valori, che l'SDK invia per te:
+
+| Valore | Header | Dove trovarlo |
+|---|---|---|
+| Reseller ID (un UUID) | `__reseller` | Pannello reseller → **API settings** |
+| API key | `X-API-KEY` | Pannello reseller → **API settings** |
+
+> [!NOTE]
+> Queste sono **credenziali API**: il login del pannello qui non funziona. **Produzione e OTE (l'ambiente di test) usano
+> chiavi API diverse.** Usare l'una con l'altro fallisce con `INVALID_API_KEY` o `INVALID_RESELLER`.
 
 ## Avvio rapido
 
 ```rust
-use domainnameapi::DomainNameApi;
+use domainnameapi::contacts::Contact;
+use domainnameapi::domains::{DomainContacts, DomainListRequest, DomainRegisterWithContactsRequest};
+use domainnameapi::{Client, Environment};
+use futures_util::TryStreamExt;
 
-fn main() {
-    let mut dna = DomainNameApi::new("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "your-api-key", false);
+#[tokio::main]
+async fn main() -> Result<(), domainnameapi::Error> {
+    // OTE è l'ambiente di test: API reale, dati propri, nessun denaro reale.
+    let client = Client::builder()
+        .credentials("your-reseller-id", "your-api-key")
+        .environment(Environment::Ote)
+        .build()?;
 
-    let details = dna.get_details("example.com");
-    if details["result"] == "OK" {
-        println!("Expires: {}", details["data"]["Dates"]["Expiration"]);
-    } else {
-        eprintln!("{}: {}", details["error"]["Code"], details["error"]["Message"]);
+    // 1. Verifica le credenziali e il saldo.
+    let account = client.account().get().await?;
+    println!("{}: {} USD", account.reseller_name, account.usd_balance);
+
+    // 2. Il dominio è disponibile, e a quale prezzo?
+    let search = client.domains().search("my-new-domain.com").await?;
+    println!("{} {} {}", search.info.status, search.info.price, search.info.currency);
+
+    // 3. Registralo con un solo contatto per tutti e quattro i ruoli. Questo addebita il saldo.
+    let contact = Contact {
+        first_name: "Ada".into(),
+        last_name: "Lovelace".into(),
+        email: "ada@example.com".into(),
+        address: "1 Example Street".into(),
+        city: "Istanbul".into(),
+        state: "Istanbul".into(),
+        postal_code: "34000".into(),
+        country: "TR".into(),
+        phone_country_code: "90".into(),
+        phone: "5551234567".into(),
+        ..Default::default()
+    };
+    let request = DomainRegisterWithContactsRequest::new(
+        "my-new-domain.com",
+        DomainContacts::same(contact),
+        ["tr.apiname.com", "eu.apiname.com"],
+    );
+    let result = client.domains().register_with_contacts(request).await?;
+    println!("{} {}, expires {:?}", result.success, result.status, result.expiration_date);
+
+    // 4. Elenca tutti i domini; le pagine vengono recuperate man mano che lo stream viene letto.
+    let mut domains = client.domains().list_all(DomainListRequest::new());
+    while let Some(domain) = domains.try_next().await? {
+        println!("{} expires in {} days", domain.domain_name, domain.remaining_days);
     }
+    Ok(())
 }
 ```
 
-Ogni esempio in [examples/](examples) si esegue con `cargo run --example <nome>`, ad esempio `cargo run --example get_details`.
+La cartella [examples](examples) contiene programmi eseguibili per questi scenari (`quickstart`, `register`, `dns`, `ssl`,
+`custom_request`, `error_handling`). Leggono le variabili d'ambiente `DNA_*`, quindi puntale su OTE:
 
-## Struttura dell'API
+```bash
+export DNA_RESELLER_ID=... DNA_API_KEY=... DNA_ENV=ote
+cargo run --example quickstart -- example.com
+```
 
-- **Un solo tipo di client**, `DomainNameApi`. I metodi prendono `&mut self` (il client ricorda l'ultima richiesta per la diagnostica).
-- **I valori di ritorno sono `serde_json::Value`** con esattamente la struttura restituita da php-dna — non modelli tipizzati. Nomi delle chiavi, flag come stringhe (`"true"` / `"false"`), importi formattati (`"11.9900"`) e buste sono identici:
-  - successo: `{"result": "OK", "data": {...}}`
-  - errore: `{"result": "ERROR", "error": {"Code": "...", "Message": "...", "Details": "..."}}`
-  - alcuni metodi usano una busta diversa, ripresa da php-dna: `get_current_balance` restituisce un oggetto `OperationResult`, `check_availability` restituisce una semplice lista in caso di successo, `get_reseller_details` restituisce i suoi campi al livello superiore.
-- **Gli errori vengono restituiti, mai lanciati.** Errori del gateway, errori HTTP e guasti di rete tornano tutti come busta di errore; nulla causa un panic. Registrazione, trasferimento e rinnovo restituiscono un errore anche quando il gateway risponde HTTP 200 con `success: false`.
-- **Gli input strutturati** (contatti, liste di nameserver, filtri, attributi TLD, contenuti dei record) sono `&Value` costruiti con `json!`. Le mappe dei contatti usano le chiavi di php-dna (`FirstName`, `EMail`, `AddressLine1`, `PhoneCountryCode`, ...); sono accettate sia la forma piatta sia quella annidata (`Address.Line1`, `Phone.Phone.Number`). Le liste di nameserver possono essere una lista o una mappa (vengono usati i valori).
-- **Niente argomenti predefiniti in Rust.** Ogni metodo prende l'elenco completo degli argomenti di php-dna nello stesso ordine. I valori predefiniti di php-dna sono esportati come costanti: `DEFAULT_TTL` (3600), `DEFAULT_REASON` ("Owner request"), `DEFAULT_FORWARD_TYPE` ("Standard"), `DEFAULT_CURRENCY` ("USD"), `DEFAULT_TLD_COUNT` (20), `DEFAULT_COMMAND` ("create"). `register_with_contact_info`, che ha quattro argomenti opzionali, dispone anche di `register_with_contact_info_opts`, che accetta una struttura `RegisterOptions` il cui `Default` corrisponde ai valori predefiniti di php-dna.
+## Configurazione
+
+Ci sono tre modi per creare un client:
+
+```rust
+// Produzione, impostazioni predefinite
+let client = Client::new(reseller_id, api_key)?;
+
+// Tutte le impostazioni
+let client = Client::builder()
+    .credentials(reseller_id, api_key)
+    .environment(Environment::Ote)
+    .timeout(Duration::from_secs(30))
+    .read_only(true)
+    .build()?;
+
+// Le stesse variabili d'ambiente lette dalla CLI dna ...
+let client = Client::from_env()?;
+
+// ... più le tue impostazioni
+let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
+```
+
+| Metodo di `ClientBuilder` | Predefinito | Significato |
+|---|---|---|
+| `credentials(reseller_id, api_key)` | (obbligatorio) | Le credenziali. `build()` fallisce con `NO_CREDENTIALS` se una delle due è vuota. |
+| `environment(...)` | `Production` | `Production` (`https://api.domainresellerapi.com`) oppure `Ote` (`https://ote.domainresellerapi.com`). |
+| `base_url(...)` | nessuno | Sostituisce l'indirizzo dell'ambiente, ad esempio per un proxy. Un prefisso di percorso viene mantenuto. |
+| `timeout(...)` | 60 s | Tempo massimo di un singolo tentativo. |
+| `max_retries(...)` | 2 | Quante volte una richiesta fallita viene ripetuta (vedi [retry](#sicurezza-retry-e-limiti-di-richieste)). 0 disattiva i retry. |
+| `max_retry_delay(...)` | 30 s | L'attesa massima prima di un retry. |
+| `pace_requests(...)` | `true` | Distanzia le richieste per restare entro i limiti di richieste del gateway. |
+| `read_only(...)` | `false` | Blocca, prima dell'invio, ogni richiesta che non sia una lettura. |
+| `user_agent(...)` | `DomainNameAPI-Rust/<version>` | L'header `User-Agent`. |
+| `http_client(...)` | quello dell'SDK | Il tuo `reqwest::Client` (proxy, impostazioni TLS). |
+
+`from_env()` legge:
+
+| Variabile | Significato |
+|---|---|
+| `DNA_RESELLER_ID`, `DNA_API_KEY` | Le credenziali. |
+| `DNA_ENV` | `production` oppure `ote` (anche `prod`, `live`, `test`, `sandbox`). |
+| `DNA_TEST_MODE` | `true`, `1`, `on` o `yes` seleziona OTE. Usata quando `DNA_ENV` non è impostata. |
+| `DNA_BASE_URL` | Sostituzione facoltativa dell'indirizzo base. |
+| `DNA_READ_ONLY` | `true` attiva la modalità di sola lettura. |
+
+`Client` è `Clone + Send + Sync` ed economico da clonare (contiene un `Arc`). Creane uno per ogni set di credenziali e
+condividilo per tutta la vita dell'applicazione: il distanziamento delle richieste è per singolo client.
 
 ## Utilizzo
 
-Tutti gli esempi presuppongono `use domainnameapi::{json, DomainNameApi};` e un client `let mut dna = DomainNameApi::new(...)`.
+Ogni area dell'API ha un proprio client, con lo stesso nome dei gruppi di comandi della CLI: `client.account()`,
+`client.contacts()`, `client.domains()` (con `forwarding()`, `child_name_servers()` e `documents()`),
+`client.dns()`, `client.dnssec()`, `client.ssl()`, `client.hosting()`, `client.orders()` e `client.products()`.
+Gli input obbligatori sono argomenti; le operazioni con input facoltativi accettano una richiesta costruita con `new(...)` e
+setter concatenati. I metodi che addebitano il tuo saldo lo indicano nella loro documentazione.
 
-#### Registrazione dominio
-
-Nota: per i domini .tr sono richiesti parametri aggiuntivi. L'argomento degli attributi aggiuntivi serve per i nomi di dominio che richiedono informazioni extra, come .tr.
+### Account
 
 ```rust
-let contact = json!({
-    "FirstName": "John",
-    "LastName": "Doe",
-    "Company": "Example Corp",
-    "EMail": "john.doe@example.com",
-    "AddressLine1": "123 Lorem Street",
-    "AddressLine2": "Suite 456",
-    "AddressLine3": "",
-    "City": "Springfield",
-    "Country": "US",
-    "Fax": "1234567890",
-    "FaxCountryCode": "1",
-    "Phone": "9876543210",
-    "PhoneCountryCode": 1,
-    "Type": "Contact",
-    "ZipCode": "12345",
-    "State": "IL"
-});
-let contacts = json!({
-    "Administrative": contact,
-    "Billing": contact,
-    "Technical": contact,
-    "Registrant": contact
-});
+let account = client.account().get().await?;          // reseller_id, reseller_name, try_balance, usd_balance
+let profile = client.account().profile().await?;      // name, company_name, account_currency, status, ...
 
-let result = dna.register_with_contact_info(
-    "example.com",
-    1,
-    &contacts,
-    &json!(["ns1.example.com", "ns2.example.com"]),
-    true,  // registrar (theft protection) lock
-    false, // privacy protection
-    &json!({}),
-);
-
-// Same, with php-dna's defaults for the optional arguments
-// (default nameservers, lock on, privacy off, no attributes):
-use domainnameapi::RegisterOptions;
-let result = dna.register_with_contact_info_opts("example.com", 1, &contacts, &RegisterOptions::default());
+// Gli addebiti di questo mese, su tutte le pagine
+let request = AccountTransactionsRequest::new()
+    .charge_type(ChargeType::Subtract)
+    .start_date("2026-11-01T00:00:00Z".parse()?)
+    .transaction_types([TransactionType::Register, TransactionType::Renew]);
+let mut transactions = client.account().all_transactions(request);
+while let Some(t) = transactions.try_next().await? {
+    println!("{:?} {} {} {}", t.creation_time, t.transaction_type, t.amount, t.amount_currency);
+}
 ```
 
-Per un dominio `.tr` passa gli attributi TRABIS. La libreria invia solo ciò che il gateway accetta (`TRABISDOMAINCATEGORY`, `TRABISCITIZENID`, `TRABISTAXOFFICE`, `TRABISTAXNUMBER`), converte `1`/`0` in `Owner`/`Corporate` e corregge la vecchia grafia `TRABISCITIZIENID`:
+### Domini
+
+**Ricerca**
 
 ```rust
-let result = dna.register_with_contact_info_opts(
+let one = client.domains().search("example.com").await?;
+let available = one.success && one.info.is_available();
+
+let many = client.domains().bulk_search(["example.com", "example.net", "example.com.tr"]).await?;
+for domain in many.available() {
+    println!("{}: {} {}", domain.domain_name, domain.price, domain.currency);
+}
+
+// Con una valuta
+client.domains().search_with(DomainSearchRequest::new("example.com").currency("USD")).await?;
+```
+
+**Elenco e dettagli**
+
+```rust
+let page = client.domains().list(DomainListRequest::new().limit(50).statuses([DomainStatus::Active])).await?;
+
+let all: Vec<Domain> = client.domains().list_all(DomainListRequest::new().domain_name("example")).try_collect().await?;
+
+let info = client.domains().info("example.com").await?;
+println!("{} {:?}", info.auth_code, info.expiration_date);
+if let Some(registrant) = info.contact(ContactType::Registrant) {
+    println!("{}", registrant.email);
+}
+```
+
+**Registrazione, rinnovo, trasferimento, ripristino** (addebitano il tuo saldo)
+
+```rust
+// Un solo contatto per tutti e quattro i ruoli, due anni
+let request = DomainRegisterWithContactsRequest::new("example.com", DomainContacts::same(contact.clone()), ["tr.apiname.com", "eu.apiname.com"])
+    .years(2);
+client.domains().register_with_contacts(request).await?;
+
+// Contatti diversi per ruolo, attributi del registry, il servizio trustee
+let request = DomainRegisterWithContactsRequest::new(
     "example.com.tr",
-    1,
-    &contacts,
-    &RegisterOptions {
-        name_servers: json!(["ns1.example.com", "ns2.example.com"]),
-        additional_attributes: json!({
-            "TRABISDOMAINCATEGORY": 1,
-            "TRABISCITIZIENID": "12345678901",
-            "TRABISNAMESURNAME": "John Doe",
-            "TRABISCOUNTRYID": "840",
-            "TRABISCITYID": "17"
-        }),
-        ..RegisterOptions::default()
-    },
-);
-```
+    DomainContacts { registrant: Some(owner), admin: Some(staff.clone()), tech: Some(staff.clone()), billing: Some(staff) },
+    ["tr.apiname.com", "eu.apiname.com"],
+)
+.tld_attribute("<key>", "<value>"); // le chiavi: client.products().tld("com.tr").await?.unwrap().attributes
 
-<details>
-<summary>Output di esempio per la registrazione dominio</summary>
+// Con handle di contatto esistenti
+let request = DomainRegisterRequest::new("example.com", ContactHandles::same("DNA-12345"), ["tr.apiname.com", "eu.apiname.com"]);
+client.domains().register(request).await?;
 
-```json
-{
-  "data": {
-    "ID": 123456,
-    "Status": "Active",
-    "DomainName": "example.com",
-    "AuthCode": "Xy9#mK2$pL5@vN8",
-    "LockStatus": "true",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "false",
-    "Contacts": {
-      "Billing": {"ID": 987654},
-      "Technical": {"ID": 987654},
-      "Administrative": {"ID": 987654},
-      "Registrant": {"ID": 987654}
-    },
-    "Dates": {
-      "Start": "2024-03-15T10:00:00",
-      "Expiration": "2025-03-15T10:00:00",
-      "RemainingDays": 365
-    },
-    "NameServers": ["ns1.example.com", "ns2.example.com"],
-    "Additional": [],
-    "ChildNameServers": []
-  },
-  "result": "OK"
+let renewal = client.domains().renew_check("example.com", Some(1)).await?;   // gratuito
+if renewal.renewable {
+    client.domains().renew("example.com", 1).await?;
 }
+
+let check = client.domains().transfer_check("example.com", "EPP-CODE").await?;  // gratuito
+if check.transferable {
+    client.domains().transfer(DomainTransferRequest::new("example.com", "EPP-CODE")).await?;
+}
+
+client.domains().restore("example.com").await?;
 ```
 
-</details>
+Le richieste vengono controllate prima dell'invio. Una registrazione senza tutti e quattro i ruoli di contatto, un contatto
+senza indirizzo e-mail o un periodo di 0 anni restituiscono un errore `ErrorKind::InvalidInput` che elenca ogni problema, e nulla
+raggiunge l'API.
 
-<hr style="border: 4px solid #000; border-style: dashed;">
+> [!NOTE]
+> L'API può rispondere a una registrazione, a un rinnovo o a un trasferimento con HTTP 200 e `"success": false` (ad esempio quando il
+> registry rifiuta il dominio). L'SDK restituisce quella risposta così com'è, come l'SDK Java: controlla
+> `DomainOperationResult::success` e `message`. Lo stesso vale per `SslOperationResult` e `ContactCreateResult`.
 
-#### Rinnovo dominio
+**Impostazioni**
 
 ```rust
-let result = dna.renew("example.com", 1);
+client.domains().lock("example.com").await?;
+client.domains().unlock("example.com").await?;
+client.domains().set_privacy("example.com", true).await?;
+client.domains()
+    .set_name_servers(DomainNameServersSetRequest::new("example.com", ["ns1.example.net", "ns2.example.net"]))
+    .await?;
+client.domains()   // un dominio firmato con DNSSEC
+    .set_name_servers(DomainNameServersSetRequest::new("example.com", ["ns1.example.net"]).dnssec_mode(DnssecMode::DisableDnssec))
+    .await?;
+let auth_code = client.domains().update_auth_code("example.com").await?;
+
+client.domains().update_contacts("example.com", DomainContacts::same(contact)).await?;
+client.domains().set_contact_handles("example.com", ContactHandles { tech: "DNA-12345".into(), ..Default::default() }).await?;
 ```
 
-<details>
-<summary>Output di esempio per il rinnovo dominio</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "ExpirationDate": "2025-03-15T10:00:00"
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Trasferimento dominio
-
-I trasferimenti non inviano mai i dati dei contatti: il registrar acquisisce i contatti dal registrar precedente, quindi ogni richiesta di trasferimento contiene `contacts: []`.
+**Inoltro URL, nameserver figli e documenti**
 
 ```rust
-let result = dna.transfer("example.com", "Xy9#mK2$", 3);
+client.domains().forwarding().set("example.com", "https://www.example.net", ForwardType::Standard).await?;
+let forwarding = client.domains().forwarding().get("example.com").await?;   // None se non impostato
+client.domains().forwarding().delete("example.com").await?;
+
+// La versione IP di ogni indirizzo viene rilevata
+client.domains().child_name_servers().add("example.com", "ns1.example.com", ["192.0.2.10", "2001:db8::10"]).await?;
+client.domains().child_name_servers()
+    .update(DomainHostUpdateRequest::new("example.com", "ns1.example.com", ["192.0.2.20"]))
+    .await?;
+client.domains().child_name_servers().delete("example.com", "ns1.example.com").await?;
+
+// Documenti del registry (soprattutto .tr)
+let document = DocumentUpload::from_file(DocumentType::IdentityCard, "id.pdf")?;
+client.domains().documents().upload("example.com.tr", [document]).await?;
+let documents: Vec<Document> = client.domains().documents().list_all("example.com.tr").try_collect().await?;
 ```
 
-<details>
-<summary>Output di esempio per il trasferimento dominio</summary>
+### Contatti
 
-```json
-{
-  "data": {
-    "ID": 0,
-    "Status": "Active",
-    "DomainName": "",
-    "AuthCode": "",
-    "LockStatus": "false",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "false",
-    "Contacts": {
-      "Billing": {"ID": 0},
-      "Technical": {"ID": 0},
-      "Administrative": {"ID": 0},
-      "Registrant": {"ID": 0}
-    },
-    "Dates": {"Start": "", "Expiration": "2027-11-09T12:00:00", "RemainingDays": 365},
-    "NameServers": [],
-    "Additional": [],
-    "ChildNameServers": []
-  },
-  "result": "OK"
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Gestione dei trasferimenti
+Gli handle di contatto sono contatti riutilizzabili. Creane uno una volta e usalo per molti domini.
 
 ```rust
-// Can the domain be transferred with this auth code?
-let check = dna.check_transfer("example.com", "Xy9#mK2$");
+let created = client.contacts().create(contact.clone()).await?;
+let handle = created.handle;                                         // ad esempio DNA-12345
 
-// Cancel an incoming transfer, approve or reject an outgoing one
-let result = dna.cancel_transfer("example.com");
-let result = dna.approve_transfer("example.com");
-let result = dna.reject_transfer("example.com");
+let details = client.contacts().get(&handle).await?;                 // il contatto e il suo stato di verifica
+let result = client.contacts().update(&handle, contact).await?;
+println!("{} of {} domains updated", result.stats.success_count, result.stats.total_domain_count);
+
+let verifications = client.contacts().verification(&handle).await?;
+client.contacts().resend_verification(&handle).await?;
 ```
 
-<details>
-<summary>Output di esempio per la gestione dei trasferimenti</summary>
+### DNS
 
-```json
-{
-  "result": "OK",
-  "data": {
-    "TransferAvailabilityStatus": true,
-    "AuthCodeIsRequired": true,
-    "AuthCodeIsValid": true,
-    "UserTransferRequired": false,
-    "TransferLock": false,
-    "Message": "Domain can be transferred",
-    "MessageKey": "TransferAvailable",
-    "Additional": []
-  }
-}
-```
-
-`check_transfer` restituisce `"result": "ERROR"` con un `error` (`TRANSFER_NOT_AVAILABLE`) quando il registro segnala che il dominio non è trasferibile; `data` è compilato in entrambi i casi. `cancel_transfer`, `approve_transfer` e `reject_transfer` restituiscono:
-
-```json
-{"result": "OK", "data": {"DomainName": "example.com", "Status": "Cancelled"}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Elenco domini
+Record di zona dei domini sui nameserver della piattaforma. I record si risolvono pubblicamente quando il dominio usa quei nameserver,
+cosa di cui si occupa `apply`.
 
 ```rust
-let result = dna.get_list(&json!({
-    "OrderColumn": "Id",
-    "OrderDirection": "ASC",
-    "PageNumber": 0,
-    "PageSize": 1000
-}));
-
-// No filters:
-let result = dna.get_list(&json!({}));
-```
-
-`PageNumber` parte da 0. Si possono passare anche i parametri propri del gateway `MaxResultCount`, `SkipCount` e `Sorting`, e filtri come `DomainName`.
-
-<details>
-<summary>Output di esempio per l'elenco domini</summary>
-
-```json
-{
-  "data": {
-    "Domains": [
-      {
-        "ID": 564346,
-        "Status": "Active",
-        "DomainName": "example.com",
-        "AuthCode": "",
-        "LockStatus": "true",
-        "PrivacyProtectionStatus": "false",
-        "IsChildNameServer": "false",
-        "Contacts": {
-          "Billing": {"ID": ""},
-          "Technical": {"ID": ""},
-          "Administrative": {"ID": ""},
-          "Registrant": {"ID": ""}
-        },
-        "Dates": {
-          "Start": "2024-03-15T10:00:00",
-          "Expiration": "2025-03-15T10:00:00",
-          "RemainingDays": 365
-        },
-        "NameServers": ["ns1.example.com", "ns2.example.com"],
-        "Additional": [],
-        "ChildNameServers": []
-      }
-    ]
-  },
-  "result": "OK",
-  "TotalCount": 1
+for set in client.dns().list("example.com").await? {
+    println!("{} {} {} {:?}", set.name, set.record_type, set.ttl, set.values());
 }
+
+let dns = client.dns();
+dns.add(DnsAddRequest::new("example.com", "www", RecordType::A, ["192.0.2.10"])).await?;
+dns.add(DnsAddRequest::new("example.com", "@", "txt", ["v=spf1 include:_spf.example.net ~all"])).await?;   // "txt" diventa TXT
+dns.add(DnsAddRequest::new("example.com", "@", RecordType::Mx, ["10 mx1.example.net", "20 mx2.example.net"]).ttl(3600)).await?;
+dns.update(DnsUpdateRequest::new("example.com", "www", RecordType::A, ["192.0.2.20"]).ttl(300)).await?;
+dns.delete(DnsDeleteRequest::new("example.com", "www", RecordType::A, "192.0.2.20")).await?;
+
+let applied = dns.apply("example.com").await?;
 ```
 
-</details>
+L'SDK controlla ciò che l'API rifiuterebbe: un CNAME all'apex, un MX senza la sua priorità, un valore CAA senza le sue
+tre parti, un record A che non è IPv4, un TTL fuori dall'intervallo 1–86400. Le chiamate alla zona sono distanziate di 1 secondo, il
+limite del gateway. L'ambiente di test OTE risponde alle chiamate alla zona con HTTP 500, quindi il codice DNS si può provare solo in produzione.
 
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Elenco TLD
+### DNSSEC
 
 ```rust
-let result = dna.get_tld_list(100);
+let info = client.dnssec().get("example.com").await?;      // status, ds_records, allowed_algorithms, ...
+
+let record: DsData = "12345 13 2 49FD46E6C4B45C55D4AC69CBD3CD34AC1AFE51DE".parse()?;
+client.dnssec().add("example.com", [record.clone()]).await?;
+client.dnssec().remove("example.com", record).await?;
+client.dnssec().disable("example.com").await?;            // rimuove tutti i record DS
 ```
 
-<details>
-<summary>Output di esempio per l'elenco TLD</summary>
+### SSL
 
-```json
-{
-  "data": [
-    {
-      "id": 1,
-      "status": "Active",
-      "maxchar": 63,
-      "maxperiod": 10,
-      "minchar": 1,
-      "minperiod": 1,
-      "tld": "com",
-      "pricing": {
-        "registration": {"1": "10.8100"},
-        "renew": {"1": "11.0100"},
-        "transfer": {"1": "10.6100"},
-        "restore": {"1": "99.9000"}
-      },
-      "currencies": {
-        "registration": "USD",
-        "renew": "USD",
-        "transfer": "USD",
-        "restore": "USD"
-      }
+Un dominio può avere più certificati, quindi un certificato esistente si indica con il suo **ID del certificato** (un GUID),
+mai con il nome di dominio. `initialize` e `renew` restituiscono l'ID: conservalo. `list` trova gli ID dei certificati
+che hai già.
+
+```rust
+// 1. Acquisto (addebita il saldo). I codici dei pacchetti provengono da client.products().ssls(...).
+let approvers = client.ssl().approvers(SslApproversRequest::for_purchase("example.com", "PKG-CODE")).await?;
+let order = client.ssl().initialize("example.com", "PKG-CODE").await?;
+let certificate_id = order.certificate_id;                  // conservalo: ogni chiamata successiva lo richiede
+
+// 2. Una CSR e una chiave privata, se non ne hai una
+let csr = client.ssl().generate_csr(
+    SslGenerateCsrRequest::new("example.com")
+        .country("TR").state("Istanbul").locality("Istanbul").organization("Example Ltd").organization_unit("IT"),
+).await?;
+
+// 3. Configura entro 15 giorni: CSR, metodo di validazione e contatto
+client.ssl().configure(
+    SslConfigureRequest::new(&certificate_id, &csr.csr, certificate_contact.clone())
+        .authentication_type(AuthenticationType::Email)
+        .approver_mail(&approvers[0])
+        .web_server_type(WebServerType::Apache),
+).await?;
+
+// 4. Attendi l'emissione, poi scarica
+let status = client.ssl().status(&certificate_id).await?;
+if status.is_issued {
+    let content = client.ssl().content(&certificate_id).await?;
+    std::fs::write("fullchain.pem", content.full_chain())?;
+}
+
+let details = client.ssl().get(&certificate_id).await?;     // abbonamento, configurazione, contatti
+client.ssl().reissue(SslReissueRequest::new(&certificate_id).csr(new_csr).private_key(new_key)).await?;
+client.ssl().revoke(&certificate_id).await?;                // non può essere annullato
+```
+
+**Elencare i certificati e trovare un ID**
+
+```rust
+let page = client.ssl().list(SslListRequest::new().domain_name("example.com")).await?;   // prima i più recenti
+
+let mut all = client.ssl().list_all(SslListRequest::new());
+while let Some(c) = all.try_next().await? {
+    println!("{} {} {} {:?}", c.certificate_id, c.domain_name, c.status, c.subscription_expires_at);
+}
+
+// Gli indirizzi di approvazione di un certificato che hai già
+let mails = client.ssl().approvers(SslApproversRequest::for_certificate(&certificate_id)).await?;
+```
+
+**Rinnovo** (addebita il tuo saldo)
+
+```rust
+// Consentito a partire da 30 giorni prima di details.subscription.expires_at. Il rinnovo è un nuovo certificato con un proprio ID.
+let renewal = client.ssl().renew(&certificate_id).await?;
+client.ssl().configure(
+    SslConfigureRequest::new(&renewal.certificate_id, &new_csr, certificate_contact)
+        .authentication_type(AuthenticationType::Email)
+        .approver_mail(&approvers[0]),
+).await?;
+```
+
+Un certificato acquistato o rinnovato va configurato entro 15 giorni; dopo viene annullato. Per rinnovare, chiama
+`renew` e poi `configure` con il nuovo ID. Non acquistare di nuovo con `initialize`: sarebbe un acquisto separato al
+prezzo di acquisto e il vecchio certificato non verrebbe mai contrassegnato come rinnovato. Un ID del certificato vuoto o
+che non è un GUID (ad esempio un nome di dominio passato da codice più vecchio) viene rifiutato prima che venga inviato qualcosa.
+
+### Hosting
+
+```rust
+let packages = client.hosting().packages().await?;
+let created = client.hosting().create("example.com", "starter-linux").await?;          // addebita il saldo
+let status = client.hosting().status(HostingStatusRequest::by_service_id(&created.service_id)).await?;
+if status.is_active() {
+    println!("{} {}", status.panel_address, status.username);
+}
+let hosting = client.hosting().get(HostingGetRequest::by_domain("example.com")).await?;
+let plans = client.hosting().plans(None).await?;
+```
+
+### Ordini e prodotti
+
+```rust
+let order = client.orders().get("ORDER-CODE").await?;
+
+if let Some(com) = client.products().tld("com").await? {
+    println!("{:?}, DNSSEC: {}", com.register_price(1), com.dnssec_available);
+}
+
+let mut tlds = client.products().all_tlds(ProductTldsRequest::new().currency("USD"));
+while let Some(tld) = tlds.try_next().await? {
+    println!("{}", tld.name);
+}
+
+let price = client.products().info("com", OrderType::Renew, 1).await?;
+let wildcard = client.products().ssls(ProductSslsRequest::new().is_wildcard(true)).await?;
+```
+
+## Richieste e il trait `Request`
+
+Ogni operazione è un tipo di richiesta che prende il nome dal suo comando CLI: `dna domain renew` è `DomainRenewRequest`,
+`dna domain renew-check` è `DomainRenewCheckRequest`, `dna dns add` è `DnsAddRequest`. I metodi delle aree le costruiscono
+per te, ma puoi anche crearle e inviarle tu stesso:
+
+```rust
+let request = DomainRenewRequest::new("example.com", 2);
+let endpoint = request.endpoint();
+println!("{endpoint} is {}", endpoint.safety);   // "POST /api/v1/domains/renew is billable"
+
+let result = client.send(&request).await?;
+
+// Lo stesso, con i dettagli HTTP: correlation ID, stato della soft quota, tentativi, durata
+let response = client.send_with_response(&request).await?;
+println!("{} quota {:?}", response.correlation_id, response.quota);
+```
+
+Rust non ha l'ereditarietà; la base di ogni richiesta è un trait:
+
+| Trait | Per |
+|---|---|
+| `Request` | Ogni operazione. `type Response` è il tipo della risposta; `Empty` per le operazioni che non restituiscono nulla (blocco, sblocco, aggiunta di un record DNS, ...). |
+| `PagedRequest<T>` | Operazioni di elenco (`Response = Page<T>`). Dà accesso al `Paging` (skip, limit, sort) e funziona con `Client::list_all`. |
+
+Una richiesta dichiara cosa è con `endpoint()`: metodo, percorso, classe di sicurezza e se è idempotente. Gli altri tre
+metodi hanno implementazioni predefinite: `query()` restituisce la query string (`Query` omette i valori vuoti), `body()` il corpo JSON
+(`JsonBody` ne costruisce uno e omette i valori vuoti, oppure usa `serde_json::json!`) e `validate()` raccoglie i problemi
+prima dell'invio. Per chiamare un endpoint che l'SDK non copre ancora, scrivi la tua richiesta:
+
+```rust
+use domainnameapi::{Endpoint, Query, Request, Validator};
+use serde::Deserialize;
+
+struct DomainNotesRequest {
+    domain_name: String,
+}
+
+#[derive(Deserialize)]
+struct DomainNotes {
+    notes: Vec<String>,
+}
+
+impl Request for DomainNotesRequest {
+    type Response = DomainNotes;
+
+    fn endpoint(&self) -> Endpoint {
+        Endpoint::get("/api/v1/domains/notes")          // GET è una lettura
     }
-  ],
-  "result": "OK"
-}
-```
 
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Verifica disponibilità dominio
-
-```rust
-let result = dna.check_availability(["hello", "world123x0"], ["com", "net"], 1, "create");
-```
-
-<details>
-<summary>Output di esempio per la verifica disponibilità</summary>
-
-In caso di successo il risultato è una semplice lista (senza chiave `result`); in caso di errore è la busta di errore.
-
-```json
-[
-  {
-    "TLD": "com",
-    "DomainName": "hello",
-    "Status": "notavailable",
-    "Command": "create",
-    "Period": 1,
-    "IsFee": false,
-    "Price": "10.8100",
-    "Currency": "USD",
-    "Reason": "Domain exists"
-  },
-  {
-    "TLD": "com",
-    "DomainName": "world123x0",
-    "Status": "available",
-    "Command": "create",
-    "Period": 1,
-    "IsFee": false,
-    "Price": "10.8100",
-    "Currency": "USD",
-    "Reason": null
-  }
-]
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Dettagli dominio
-
-```rust
-let result = dna.get_details("example.com");
-
-// Re-read the domain from the registry (same result shape):
-let result = dna.sync_from_registry("example.com");
-```
-
-<details>
-<summary>Output di esempio per i dettagli dominio</summary>
-
-```json
-{
-  "data": {
-    "ID": 564346,
-    "Status": "Active",
-    "DomainName": "example.com",
-    "AuthCode": "DHQ!K52",
-    "LockStatus": "true",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "true",
-    "Contacts": {
-      "Billing": {"ID": "DNA-B-4"},
-      "Technical": {"ID": "DNA-T-3"},
-      "Administrative": {"ID": "DNA-A-2"},
-      "Registrant": {"ID": "DNA-R-1"}
-    },
-    "Dates": {
-      "Start": "2025-05-26T16:08:37",
-      "Expiration": "2027-05-26T16:08:37",
-      "RemainingDays": 449
-    },
-    "NameServers": ["ns1.example.com", "ns2.example.com"],
-    "Additional": {"TRABISDOMAINCATEGORY": "1"},
-    "ChildNameServers": [
-      {"ns": "ns1.example.com", "ip": "1.2.3.4"}
-    ]
-  },
-  "result": "OK"
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Modifica nameserver
-
-```rust
-let result = dna.modify_name_server("example.com", &json!(["ns1.example.com", "ns2.example.com"]));
-```
-
-<details>
-<summary>Output di esempio per la modifica nameserver</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServers": ["ns1.example.com", "ns2.example.com"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Attiva blocco dominio
-
-```rust
-let result = dna.enable_theft_protection_lock("example.com");
-```
-
-<details>
-<summary>Output di esempio per l'attivazione del blocco</summary>
-
-```json
-{"result": "OK", "data": {"LockStatus": true}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Disattiva blocco dominio
-
-```rust
-let result = dna.disable_theft_protection_lock("example.com");
-```
-
-<details>
-<summary>Output di esempio per la disattivazione del blocco</summary>
-
-```json
-{"result": "OK", "data": {"LockStatus": false}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Aggiungi child nameserver
-
-```rust
-let result = dna.add_child_name_server("example.com", "ns1.example.com", "1.2.3.4");
-```
-
-<details>
-<summary>Output di esempio per l'aggiunta di un child nameserver</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServer": "ns1.example.com",
-    "IPAdresses": ["1.2.3.4"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Elimina child nameserver
-
-```rust
-let result = dna.delete_child_name_server("example.com", "ns1.example.com");
-```
-
-<details>
-<summary>Output di esempio per l'eliminazione di un child nameserver</summary>
-
-```json
-{"result": "OK", "data": {"NameServer": "ns1.example.com"}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Aggiorna child nameserver
-
-```rust
-let result = dna.modify_child_name_server("example.com", "ns1.example.com", "1.2.3.4");
-```
-
-<details>
-<summary>Output di esempio per l'aggiornamento di un child nameserver</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServer": "ns1.example.com",
-    "IPAdresses": ["1.2.3.4"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Modifica privacy dominio
-
-`status` è un `bool` oppure un valore come lo salvano i pannelli: `"1"`, `"on"`, `"true"`, `"yes"` e `1` significano attivo, qualsiasi altro valore disattivo. L'argomento del motivo (reason) è mantenuto solo per compatibilità e non viene inviato, perché il gateway non ha questo campo.
-
-```rust
-let result = dna.modify_privacy_protection_status("example.com", true, "Owner request");
-```
-
-<details>
-<summary>Output di esempio per la modifica della privacy</summary>
-
-```json
-{"data": {"PrivacyProtectionStatus": true}, "result": "OK"}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Ottieni contatti dominio
-
-```rust
-let result = dna.get_contacts("example.com");
-```
-
-<details>
-<summary>Output di esempio per l'ottenimento dei contatti</summary>
-
-```json
-{
-  "data": {
-    "contacts": {
-      "Administrative": {
-        "ID": "DNA-A-2",
-        "Status": "Active",
-        "AuthCode": "",
-        "FirstName": "John",
-        "LastName": "Doe",
-        "Company": "Example Corp",
-        "EMail": "john@example.com",
-        "Type": "Administrative",
-        "Address": {
-          "Line1": "123 Main Street",
-          "Line2": "",
-          "Line3": "",
-          "State": "IL",
-          "City": "Springfield",
-          "Country": "US",
-          "ZipCode": "62701"
-        },
-        "Phone": {
-          "Phone": {"Number": "5551234567", "CountryCode": "1"},
-          "Fax": {"Number": "", "CountryCode": ""}
-        },
-        "Additional": []
-      },
-      "Billing": {"...": "same shape"},
-      "Registrant": {"...": "same shape"},
-      "Technical": {"...": "same shape"}
+    fn query(&self) -> Query {
+        Query::new().set_str("DomainName", &self.domain_name)
     }
-  },
-  "result": "OK"
-}
-```
 
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Salva contatti dominio
-
-```rust
-let contact = json!({
-    "FirstName": "John",
-    "LastName": "Doe",
-    "Company": "Example Corp",
-    "EMail": "john@example.com",
-    "AddressLine1": "123 Main Street",
-    "AddressLine2": "",
-    "AddressLine3": "",
-    "City": "Springfield",
-    "Country": "US",
-    "Fax": "5559876543",
-    "FaxCountryCode": "1",
-    "Phone": "5551234567",
-    "PhoneCountryCode": 1,
-    "Type": "Contact",
-    "ZipCode": "62701",
-    "State": "IL"
-});
-
-let result = dna.save_contacts("example.com", &json!({
-    "Administrative": contact,
-    "Billing": contact,
-    "Technical": contact,
-    "Registrant": contact
-}));
-```
-
-<details>
-<summary>Output di esempio per il salvataggio dei contatti</summary>
-
-```json
-{"result": "OK", "data": {"contacts": []}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Record della zona DNS
-
-Il gateway memorizza i record come **insiemi** (un nome + tipo con uno o più valori). Scrivere un insieme sostituisce tutti i suoi valori, ed eliminare un qualsiasi valore rimuove l'intero insieme. I metodi `*_value` eseguono per te la lettura-unione-scrittura, così un pannello può gestire i record uno alla volta. I nomi possono essere relativi (`www`), `@` / vuoti per l'apex, oppure completamente qualificati; vengono ridotti all'etichetta relativa che il gateway si aspetta. Tipi supportati: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT. Le modifiche vengono applicate subito quando `apply` è `true` (predefinito di php-dna); altrimenti chiama `apply_resource_records`. Le chiamate di zona sono distanziate di almeno un secondo perché il gateway limita le raffiche di richieste. Se l'applicazione automatica fallisce, il metodo restituisce l'errore dell'applicazione (la modifica resta in attesa). I risultati riportano il tipo in maiuscolo e il TTL effettivamente inviato (sotto 1 diventa 3600, sopra 86400 diventa 86400).
-
-```rust
-// List every record (one row per value; names come back as FQDNs)
-let records = dna.get_resource_records("example.com");
-
-// Make a set hold exactly these values (an empty list removes the set)
-dna.set_resource_record_set("example.com", "@", "MX", ["10 mx1.example.com", "20 mx2.example.com"], 3600, true);
-
-// Add, remove or replace one value, keeping the others (ttl None keeps the set's TTL)
-dna.add_resource_record_value("example.com", "@", "MX", "30 mx3.example.com", None, true);
-dna.remove_resource_record_value("example.com", "@", "MX", "30 mx3.example.com", true);
-dna.replace_resource_record_value("example.com", "@", "A", "192.0.2.1", "192.0.2.2", None, true);
-
-// Remove a whole set (pass a current value to save a lookup, or "")
-dna.delete_resource_record_set("example.com", "www", "CNAME", true, "");
-
-// Low-level calls, mirroring the gateway endpoints
-dna.add_resource_record("example.com", "www", "A", &json!("192.0.2.5"), 3600, true);
-dna.edit_resource_record("example.com", "www", "www", "A", &json!("192.0.2.6"), 600, true);
-dna.delete_resource_record("example.com", "www", "192.0.2.5", "A", true);
-dna.apply_resource_records("example.com");
-```
-
-<details>
-<summary>Output di esempio per i record della zona DNS</summary>
-
-`get_resource_records`:
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "records": [
-      {"Name": "example.com.", "Type": "A", "TTL": 3600, "Content": "192.0.2.1", "Disabled": false},
-      {"Name": "www.example.com.", "Type": "CNAME", "TTL": 300, "Content": "example.com.", "Disabled": false},
-      {"Name": "example.com.", "Type": "MX", "TTL": 3600, "Content": "10 mx1.example.com.", "Disabled": false}
-    ]
-  }
-}
-```
-
-`set_resource_record_set` / `add_resource_record_value`:
-
-```json
-{"result": "OK", "data": {"Name": "", "Type": "MX", "TTL": 3600, "Contents": ["10 mx1.example.com.", "20 mx2.example.com.", "30 mx3.example.com"]}}
-```
-
-Un valore già presente (o assente, in caso di rimozione) non cambia nulla:
-
-```json
-{"result": "OK", "data": {"Name": "", "Type": "MX", "Contents": ["10 mx1.example.com."], "Changed": false}}
-```
-
-Un tipo non supportato viene rifiutato prima di qualsiasi richiesta:
-
-```json
-{"result": "ERROR", "error": {"Code": "ADD_ZONE", "Message": "Record type \"NS\" is not supported by the DNS zone API. Supported types: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT.", "Details": "..."}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Inoltro URL
-
-```rust
-let current = dna.get_forwarding("example.com");
-let result = dna.set_forwarding("example.com", "https://www.example.org", "Standard"); // or "Frame" (masked)
-let result = dna.delete_forwarding("example.com");
-```
-
-<details>
-<summary>Output di esempio per l'inoltro URL</summary>
-
-```json
-{"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org/landing", "ForwardType": "Frame"}}
-```
-
-Se non è configurato alcun inoltro (il gateway risponde `Redirect information not found`), `get_forwarding` restituisce `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`; qualsiasi altro errore, come un dominio inesistente, viene restituito come errore. `set_forwarding` restituisce `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`. `delete_forwarding` restituisce `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`, oppure `"Removed": false` se non era impostato alcun inoltro.
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Ottieni dettagli rivenditore
-
-```rust
-let result = dna.get_reseller_details();
-let balance = dna.get_current_balance("USD"); // "USD" or "TRY"
-```
-
-<details>
-<summary>Output di esempio per i dettagli del rivenditore</summary>
-
-```json
-{
-  "result": "OK",
-  "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "active": true,
-  "name": "Example Reseller",
-  "balance": "601.64",
-  "currency": "USD",
-  "symbol": "$",
-  "balances": [
-    {"balance": "601.64", "currency": "USD", "symbol": "$"},
-    {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
-  ]
-}
-```
-
-`get_current_balance`:
-
-```json
-{
-  "ErrorCode": 0,
-  "OperationMessage": "Command completed succesfully.",
-  "OperationResult": "SUCCESS",
-  "Balance": "601.64",
-  "CurrencyId": 2,
-  "CurrencyInfo": null,
-  "CurrencyName": "USD",
-  "CurrencySymbol": "$"
-}
-```
-
-L'account riporta i saldi in USD e TRY; qualsiasi altra valuta (EUR, GBP, ...) fallisce con `ErrorCode` `"BALANCE"`. In caso di errore `OperationResult` è `"FAILED"`, `ErrorCode` contiene il codice (ad es. `"API_429"`) e `Balance` è `"0.00"`.
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Utilità (senza rete)
-
-```rust
-let is_tr = dna.is_tr_tld("example.com.tr"); // true
-
-// Complete and normalise a contact the way registration does
-let contact = dna.validate_contact(&json!({
-    "FirstName": " Jo ",
-    "Phone": "+1 (202) 555-0100",
-    "Country": "Turkey"
-}));
-```
-
-<details>
-<summary>Output di esempio per validate_contact</summary>
-
-```json
-{
-  "FirstName": "Jo",
-  "Phone": "2025550100",
-  "Country": "TR",
-  "LastName": "Isimyok",
-  "AddressLine1": "Addres yok",
-  "City": "ISTANBUL",
-  "ZipCode": "34000",
-  "PhoneCountryCode": "1",
-  "State": "ISTANBUL",
-  "Fax": "",
-  "FaxCountryCode": ""
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-## Gestione degli errori
-
-Ogni metodo di rete restituisce un valore; controlla `result`:
-
-```rust
-let out = dna.get_details("missing.com");
-if out["result"] == "ERROR" {
-    println!("{}", out["error"]["Code"]);        // "API_404"
-    println!("{}", out["error"]["GatewayCode"]); // "Dna.DomainService:Domain:10007"
-    println!("{}", out["error"]["Message"]);     // "The domain name you requested could not be found. ..."
-    println!("{}", out["error"]["Details"]);
-}
-```
-
-- Gli errori HTTP usano il codice `API_<stato>` (`API_400`, `API_404`, `API_429`, `API_500`, ...). Un corpo di errore vuoto diventa un messaggio leggibile come `HTTP 429 - Too Many Requests`. Quando il gateway ha inviato un proprio codice di errore, la busta lo riporta anche come `GatewayCode` (ad es. `"Dna.DomainService:Domain:10007"`).
-- Una risposta 301/302 indica credenziali errate: `Invalid API credentials`.
-- Gli errori di validazione del gateway vengono riassunti in `Details` indicando il campo, ad es. `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
-- I guasti di rete sono errori, mai un successo vuoto. Un timeout produce `Could not reach the DomainNameAPI service: the connection timed out. (...)`; gli altri guasti producono `Curl error during request: ...`. Il loro codice è `CURL_<numero errore curl>` (`CURL_28` per un timeout, `CURL_6` per il DNS, `CURL_7` per una connessione rifiutata); `API_<n>` è riservato agli stati HTTP.
-- La validazione locale (tipo di record non supportato, indirizzo di inoltro mancante, nessun dominio da verificare) fallisce prima di qualsiasi richiesta con un codice descrittivo (`ADD_ZONE`, `SET_FORWARD`, `AVAILABILITY`, ...).
-
-### Diagnostica
-
-```rust
-dna.get_request_data();        // {"url", "method", "payload"} of the last request
-dna.get_response_data();       // decoded last response, or {"raw_response": "<body>"}
-dna.get_response_headers();    // {"url", "content_type", "http_code", "total_time", "headers"}
-dna.get_parsed_response_data();// parsed body on success, {"Code", "Message", "Details"} on failure
-dna.get_last_function();       // e.g. "request:GET domains/info"
-dna.get_service_url();
-dna.set_service_url("https://ote.domainresellerapi.com/api/v1");
-```
-
-### Transport personalizzato
-
-Il livello HTTP è il trait `Transport`. Quello predefinito è `UreqTransport` (`ureq` bloccante con rustls, timeout di 30 s totali e 10 s di connessione, redirect non seguiti). Sostituiscilo per proxy, client personalizzati o test:
-
-```rust
-use domainnameapi::{HttpRequest, HttpResponse, Transport, TransportError};
-
-struct MyTransport;
-impl Transport for MyTransport {
-    fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
-        // perform req.method on req.url with req.headers and req.body
-        Ok(HttpResponse { status: 200, body: "{}".into(), headers: vec![] })
+    fn validate(&self, v: &mut Validator) {
+        v.required("domainName", &self.domain_name);
     }
 }
 
-dna.set_transport(Box::new(MyTransport));
+let notes = client.send(&DomainNotesRequest { domain_name: "example.com".into() }).await?;
 ```
 
-## Modalità test
+La tua richiesta ottiene tutto ciò che ottengono quelle integrate: credenziali, retry per classe di sicurezza, distanziamento, modalità di sola lettura e
+gestione degli errori. Per una modifica, usa `Endpoint::post(path, OperationSafety::Write)` (oppure `Billable`, `Destructive`) e
+aggiungi `.idempotent()` solo quando inviarla due volte non ha conseguenze.
 
-Passa `true` (oppure `"true"`, `"1"`, `"on"`, `"yes"`) come terzo argomento del costruttore per usare l'ambiente di test OTE su `https://ote.domainresellerapi.com/api/v1`. Le chiamate live vanno a `https://api.domainresellerapi.com/api/v1`.
+## Errori
 
-## Test
+Ogni richiesta fallita restituisce un `Error`, anche quando la richiesta non ha superato i controlli e non è stato inviato nulla.
 
-La suite di test non richiede né rete né credenziali:
+```rust
+use domainnameapi::ErrorKind;
+
+match client.domains().renew("example.com", 1).await {
+    Ok(result) => println!("{} {}", result.success, result.message),
+    Err(e) if e.kind() == ErrorKind::Validation => {
+        println!("{}: {}", e.code(), e.message());   // Dna.DomainService:Domain:10007: ...
+        for field in e.validation_errors() {
+            println!("  {field}");
+        }
+    }
+    Err(e) if e.is_outcome_unknown() => {
+        // Una richiesta a pagamento o che modifica qualcosa è fallita in rete: potrebbe aver raggiunto l'API.
+        // Controlla lo stato prima di inviarla di nuovo.
+        let info = client.domains().info("example.com").await?;
+    }
+    Err(e) => return Err(e.into()),
+}
+```
+
+| Metodo | Significato |
+|---|---|
+| `kind()` | Una classificazione stabile (tabella sotto). Ramifica su questa, non sul messaggio. |
+| `code()` | Il codice di errore dell'API (come `Dna.DomainService:Domain:10007`) o uno dei codici dell'SDK qui sotto. Quelli più comuni sono costanti in `domainnameapi::codes`. |
+| `message()` | Cosa è successo. I messaggi generici vengono sostituiti con i dettagli dell'API. |
+| `status()` | Lo stato HTTP, oppure `None` se non è arrivata alcuna risposta. |
+| `details()`, `validation_errors()` | Dettagli aggiuntivi e problemi a livello di campo (dall'API o dai controlli prima dell'invio). |
+| `correlation_id()` | L'`X-Correlation-Id` del gateway. Citalo quando contatti il supporto. |
+| `hint()` | Un breve suggerimento su cosa fare dopo. |
+| `is_retryable()` | Indica se ripetere la stessa richiesta più tardi può riuscire. |
+| `is_outcome_unknown()` | La richiesta potrebbe essere stata eseguita: una modifica è fallita in rete, oppure l'API ha indicato che il registry potrebbe averla già eseguita. |
+| `is_not_found()`, `is_insufficient_balance()` | Scorciatoie per i casi comuni. |
+| `operation()`, `safety()` | La richiesta fallita (`POST /api/v1/domains/renew`) e la sua classe di sicurezza. |
+| `retry_after()`, `response_body()` | Il `Retry-After` del gateway e la risposta grezza. |
+
+`Error` implementa `std::error::Error` e `Display` (`[CODE] message (HTTP 400); field: problem`), quindi funziona
+con `?`, `anyhow` e `thiserror`.
+
+| `kind()` | Quando |
+|---|---|
+| `Auth` | Credenziali errate o mancanti, oppure reseller sconosciuto o sospeso in questo ambiente (401, redirect). |
+| `Forbidden` | Autenticato ma non autorizzato (403). |
+| `NotFound` | Il dominio, il contatto, il certificato, l'ordine o un'altra risorsa non esiste (404). |
+| `Validation` | L'API ha rifiutato l'input o una regola di business è fallita: campo errato, dominio bloccato, saldo insufficiente (400, 422). |
+| `Conflict` | Lo stato della risorsa non consente l'operazione (409). |
+| `RateLimited` | Limite di richieste ancora superato dopo i retry automatici (429). |
+| `Server` | Un errore lato server (5xx). Spesso temporaneo. |
+| `Network`, `Timeout` | Nessuna risposta: DNS, TLS, proxy, connessione interrotta, o nessuna risposta entro il timeout. |
+| `InvalidInput` | La richiesta non ha superato i controlli, oppure un'impostazione del client non è valida; non è stato inviato nulla. |
+| `ReadOnly` | Bloccata dalla modalità di sola lettura; non è stato inviato nulla. |
+| `Unknown` | Qualsiasi altro caso, inclusa una risposta che l'SDK non ha saputo leggere. |
+
+`ErrorKind::as_str()` restituisce i nomi usati dalla CLI (`auth`, `not_found`, `rate_limited`, ...). Codici impostati dall'SDK stesso:
+
+| Codice | Significato |
+|---|---|
+| `INVALID_RESELLER` | Il gateway ha reindirizzato alla sua pagina di sospensione: il reseller ID è sconosciuto, inattivo o sospeso **in questo ambiente**. |
+| `INVALID_API_KEY` | La chiave non corrisponde al reseller. Le chiavi di produzione e OTE sono diverse. |
+| `MISSING_API_KEY`, `MISSING_RESELLER_ID`, `NO_CREDENTIALS` | Una credenziale è vuota. |
+| `SUBRESELLER_NOT_ALLOWED` | Gli account sub-reseller non possono usare l'API. Usa le credenziali del reseller principale. |
+| `UNAUTHORIZED` | Qualsiasi altro 401. |
+| `RATE_LIMITED` | 429 dopo i retry. |
+| `NETWORK`, `TIMEOUT` | Non è arrivata alcuna risposta. |
+| `READ_ONLY` | Bloccata dalla modalità di sola lettura. |
+| `INVALID_INPUT`, `INVALID_CONFIGURATION` | Una richiesta non ha superato i controlli, oppure un'impostazione del client non è valida. |
+| `EMPTY_RESPONSE`, `INVALID_RESPONSE` | Una risposta riuscita era vuota o non è stato possibile leggerla. |
+| `HTTP_<status>` | L'API non ha inviato alcun codice di errore. |
+
+## Sicurezza, retry e limiti di richieste
+
+Ogni richiesta ha una classe di sicurezza, la stessa usata dalla CLI `dna`:
+
+| `OperationSafety` | Significato | Esempi |
+|---|---|---|
+| `Read` | Nessun effetto collaterale, anche quando l'API usa POST o PUT | ricerca, dettagli, elenchi, verifiche di rinnovo e trasferimento, generazione della CSR, stato del certificato |
+| `Write` | Una modifica gratuita e reversibile | record DNS, blocco, privacy, nameserver, contatti |
+| `Billable` | Addebita il tuo saldo | registrazione, rinnovo, trasferimento, ripristino, acquisto e rinnovo SSL, ordine di hosting |
+| `Destructive` | Elimina qualcosa o è difficile da annullare | eliminazione di record DNS, rimozione DNSSEC, revoca del certificato |
+
+- **Modalità di sola lettura** (`read_only(true)` o `DNA_READ_ONLY=true`) blocca, prima dell'invio, tutto ciò che non è `Read`.
+  Usala mentre esplori, nei report e nelle dashboard.
+- **Retry.** Le risposte 429 vengono sempre ritentate, rispettando `Retry-After`. È sicuro anche per le richieste a pagamento,
+  perché il gateway le rifiuta prima che venga eseguito qualsiasi cosa. Errori di rete, timeout e risposte 502/503/504 vengono ritentati
+  solo per le letture e per le scritture che la CLI contrassegna come idempotenti (blocco, sblocco, privacy, nameserver, aggiornamento DNS e
+  apply). Una registrazione o un rinnovo non viene mai inviato due volte.
+- **Distanziamento.** Il gateway consente 5 richieste al secondo per chiave e 2 al secondo per le ricerche di domini. Il client
+  distanzia le richieste per restare entro questi limiti e mantiene le chiamate alla zona DNS a 1 secondo di distanza. Le informazioni sul dominio e l'elenco dei TLD
+  non hanno limiti di richieste.
+- **Soft quota.** Le ricerche e le consultazioni di informazioni costano 1 punto, tutto il resto 10. Oltre i 200 punti il gateway rallenta ogni
+  richiesta fino a 5 secondi; i punti decadono del 20% al minuto. `send_with_response` mostra lo stato in `quota`.
+
+## Codice asincrono e bloccante
+
+L'SDK è asincrono e richiede un runtime Tokio (quello avviato da `#[tokio::main]`, o quello del tuo server). I future sono
+`Send`, quindi funzionano in `tokio::spawn` e negli handler di axum e actix. Gli elenchi si possono leggere pagina per pagina (`list`) o come
+`Stream` di elementi (`list_all`), che recupera la pagina successiva solo quando serve:
+
+```rust
+use futures_util::TryStreamExt;
+
+let expiring: Vec<Domain> = client
+    .domains()
+    .list_all(DomainListRequest::new())
+    .try_filter(|d| std::future::ready(d.remaining_days < 30))
+    .try_collect()
+    .await?;
+```
+
+Non esiste un'API bloccante: raddoppierebbe la superficie dell'API con poco vantaggio. Nel codice sincrono, esegui le chiamate su un
+runtime:
+
+```rust
+let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+let account = runtime.block_on(client.account().get())?;
+```
+
+## Testare il tuo codice
+
+All'SDK serve solo un endpoint HTTP. Per testare il codice che lo usa senza chiamare l'API, punta `base_url` su un server
+locale (ad esempio uno costruito con `wiremock`, `httpmock` o `axum`) e disattiva il distanziamento:
+
+```rust
+let client = Client::builder()
+    .credentials("test", "test")
+    .base_url(format!("http://{}", server_address))
+    .pace_requests(false)
+    .build()?;
+```
+
+I modelli implementano `Default` e `Deserialize`, quindi i dati di test possono provenire da JSON; gli errori per i tuoi mock si possono costruire
+con `Error::new(kind, code, message)`. Per i test sull'API reale, usa OTE con la sua chiave.
+
+## Struttura del progetto
+
+```
+src/
+├── lib.rs           Documentazione del crate e re-export
+├── client.rs        Client, ClientBuilder, Environment: invio, retry, distanziamento, parsing degli errori, list_all
+├── request.rs       Request, PagedRequest, Endpoint, OperationSafety, Query, JsonBody, Validator, Page, Empty
+├── error.rs         Error, ErrorKind, codes
+├── de.rs            Decodifica tollerante e macro che dichiarano modelli ed enum (interno)
+├── account.rs       AccountClient     Saldi, profilo e transazioni
+├── contacts.rs      ContactsClient    Handle di contatto
+├── domains/         DomainsClient     Domini, più forwarding(), child_name_servers() e documents()
+├── dns.rs           DnsClient         Record di zona
+├── dnssec.rs        DnssecClient      Record DS
+├── ssl.rs           SslClient         Certificati
+├── hosting.rs       HostingClient     Pacchetti e servizi di hosting
+├── orders.rs        OrdersClient      Ordini
+└── products.rs      ProductsClient    TLD, prodotti SSL e prezzi
+tests/               Test su API finta, il test di copertura della specifica e testdata/openapi.json
+examples/            Programmi eseguibili
+```
+
+Ogni modulo di area ha la stessa forma: i modelli e gli enum delle sue risposte, un tipo di richiesta per operazione
+(`XxxRequest`) e un `XxxClient`.
+
+## Sviluppo
 
 ```bash
-cargo test
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test                    # test unitari, su API finta, della specifica e della documentazione; nessuno chiama l'API reale
+cargo build --examples
 ```
 
-Contiene test unitari per il livello HTTP, la mappatura degli errori, il mascheramento della telemetria e le utilità, oltre a un test di conformità che riproduce tutte le 134 fixture di php-dna da `tests/conformance/` e verifica che ogni richiesta inviata e ogni valore di ritorno corrispondano a php-dna.
+Senza una toolchain locale, usa Docker:
 
-## Segnalazione errori (telemetria)
-
-Quando una chiamata API fallisce, la libreria può inviare una segnalazione di errore al sistema di tracciamento errori di DomainNameAPI (Sentry). Una piccola quota casuale delle chiamate riuscite (4%, più ogni chiamata più lenta di 1 secondo) viene inviata come record di prestazioni. Questo aiuta DomainNameAPI a trovare e risolvere i problemi. La segnalazione degli errori è **attiva per impostazione predefinita**.
-
-**Cosa viene inviato:**
-
-- codice e messaggio di errore
-- percorso dell'endpoint chiamato e metodo HTTP
-- durata della chiamata
-- nome dell'applicazione (`DomainNameAPI-Rust`) e versione della libreria
-- ID rivenditore e nome di dominio
-- l'indirizzo IP pubblico del server (ricavato in background tramite `api.ipify.org`)
-- il nome utente del sistema operativo
-- la richiesta e la risposta API, inclusi i dati dei contatti del dominio; vengono mascherate solo le credenziali — codici EPP/auth, chiavi API, password, segreti e token sono sostituiti con `***`
-
-**Cosa non viene mai inviato:** codici EPP/auth, chiavi API, password o token in forma leggibile.
-
-Le segnalazioni vengono inviate da un thread in background con timeout brevi; non bloccano mai la tua chiamata né la fanno fallire. Errori attesi come «dominio non trovato» o «saldo insufficiente» non vengono segnalati.
-
-**Perché e per quanto tempo:** i dati sono usati solo per misurare l'utilizzo e diagnosticare tempestivamente i problemi, e vengono conservati per 30 giorni sul server Sentry di DomainNameAPI, dopodiché vengono eliminati automaticamente.
-
-**Come disattivarla o ridurla:**
-
-```rust
-let mut dna = DomainNameApi::new(reseller_id, api_key, false);
-dna.set_error_reporting_enabled(false); // nothing is sent
-
-// or keep it on but send only the error code and message, endpoint,
-// timing, versions and reseller ID (no request/response data, domain, IP or user name)
-dna.set_telemetry_minimal(true);
+```bash
+docker run --rm -v "$PWD":/src -w /src rust:1.83 sh -c 'rustup component add rustfmt clippy; cargo fmt --check; cargo clippy --all-targets -- -D warnings; cargo test'
 ```
 
-> 🔒 **Sicurezza:** la verifica dei certificati TLS è attiva. Su un host con un bundle CA obsoleto può essere disattivata con `dna.set_ssl_verification(false);` — non è consigliato; aggiornare il bundle CA è la soluzione migliore.
+I test non chiamano mai l'API reale: usano un piccolo server HTTP su 127.0.0.1 (`tests/common`). La CI li esegue sulla
+versione minima di Rust supportata (1.83) e sull'ultima stabile.
 
-## Codici di Ritorno ed Errore con Descrizioni
+`tests/testdata/openapi.json` è il documento API che la CLI `dna` incorpora. `tests/spec.rs` verifica che ogni operazione
+al suo interno abbia esattamente un tipo di richiesta con il metodo, il percorso, la classe di sicurezza e l'idempotenza della CLI, che ogni richiesta
+invii solo parametri di query e proprietà del corpo descritti nel documento (oggetti annidati inclusi, con quelli obbligatori
+presenti) e che i tipi di risposta usino i nomi del documento. Quando l'API aggiunge un'operazione, aggiorna il documento e il
+test fallisce finché il tipo di richiesta non esiste.
 
-| Codice | Descrizione | Dettaglio |
-|--------|-------------|-----------|
-| 1000 | Comando completato con successo | Operazione riuscita. |
-| 1001 | Comando completato con successo; azione in sospeso | Operazione riuscita. Tuttavia, l'operazione è attualmente in coda per il completamento. |
-| 2003 | Parametro richiesto mancante | Errore parametro mancante. Ad esempio: nessuna voce telefonica nelle informazioni di contatto. |
-| 2105 | L'oggetto non è idoneo per il rinnovo | Lo stato del dominio non è adatto per il rinnovo, bloccato per operazioni di aggiornamento. Lo stato non dovrebbe essere "clientupdateprohibited". Potrebbe essere dovuto ad altre condizioni di stato. |
-| 2200 | Errore di autenticazione | Errore di autorizzazione, codice di sicurezza errato o dominio registrato con un altro registrar. |
-| 2302 | L'oggetto esiste | Il nome di dominio o le informazioni del name server esistono già nel database. Non può essere registrato. |
-| 2303 | L'oggetto non esiste | Il nome di dominio o le informazioni del name server non esistono nel database. È richiesta una nuova registrazione. |
-| 2304 | Lo stato dell'oggetto vieta l'operazione | Lo stato del dominio non è adatto per gli aggiornamenti, bloccato per operazioni di aggiornamento. Lo stato non dovrebbe essere "clientupdateprohibited". Potrebbe essere dovuto ad altre condizioni di stato. |
+## Passare dalla 1.x
 
-| CODICE | DETTAGLIO |
-|--------|-----------|
-| 101 | Errore di sistema dettagliato per ({0})! |
-| 102 | Errori multipli dettagliati per ({0})! |
-| 103 | Errori sconosciuti dettagliati per ({0})! |
-| 200 | Comando API non trovato ({0})! |
-| 210 | Servizio API non trovato ({0})! |
-| 211 | Provider di servizio API non impostato! |
-| 300 | Rivenditore non trovato! |
-| 301 | Il tuo indirizzo IP attuale non è autorizzato ad accedere. Assicurati di connetterti da un indirizzo IP autorizzato e riprova |
-| 310 | TLD non supportato! |
-| 320 | API non trovata! |
-| 321 | Valuta non supportata! |
-| 330 | Parametro/i richiesto/i non impostato/i ({0}). |
-| – | Assicurati di inviare tutti gli oggetti di contatto completi |
-| 340 | Definizione prezzo non trovata ({0}[{1}]-{2}{3}). |
-| 350 | Saldo rivenditore insufficiente. (Id Rivenditore : {0} - Saldo Attuale : {1} {2}). |
-| 350 | La valuta contabile non corrisponde o il saldo non è sufficiente. |
-| 360 | Richiesta API non valida per il campo ({0}). |
-| 360 | Quota API superata! |
-| 361 | Errore di throttling! |
-| 362 | Il dominio premium non è disponibile per la registrazione al momento. |
-| 363 | Operazione annullata perché il dominio è nel periodo di rinnovo automatico |
-| 364 | Questo dominio è attualmente non disponibile per la transazione a causa di un problema con il registro |
+La 2.0 è un nuovo SDK. La 1.x era un port della libreria PHP: un client bloccante `DomainNameApi` che restituiva envelope
+`serde_json::Value` non tipizzati. La 2.0 è asincrona, con richieste e modelli tipizzati, `Result<T, Error>` e un builder.
 
-| CODICE | DETTAGLIO |
-|--------|-----------|
-| 400 | Contatto non valido ({0}). |
-| 401 | Le informazioni di contatto non possono essere sincronizzate. |
-| 402 | Nessun accesso alle informazioni di contatto dal registro. |
-| 403 | IL SISTEMA HA INFORMAZIONI MANCANTI. INSERISCI LE TUE INFORMAZIONI PREDEFINITE O CONTATTA IL TEAM DI SUPPORTO. |
-| 404 | IL CONTATTO DEL DOMINIO NON PUÒ ESSERE AGGIORNATO. PERMESSO DAL REGISTRO. |
-| 410 | Contatto non trovato. |
-| 410 | Contatto non trovato ({0}). |
-| 420 | Comando Api non valido per il contatto {0}. |
-| 430 | API contatto non trovata. |
-| 440 | Il contatto non è sincronizzato. |
-| 450 | Troppi contatti di dominio.. ! |
-| 451 | Impossibile procedere con l'aggiornamento del contatto. |
+| 1.x | 2.0 |
+|---|---|
+| `DomainNameApi::new(id, key, true)` | `Client::builder().credentials(id, key).environment(Environment::Ote).build()?` |
+| `dna.get_reseller_details()`, `dna.get_current_balance(..)` | `client.account().get()` / `profile()` |
+| `dna.check_availability(..)` | `client.domains().search(..)` / `bulk_search(..)` |
+| `dna.get_list(..)` | `client.domains().list(..)` / `list_all(..)` |
+| `dna.get_details(domain)` | `client.domains().info(domain)` |
+| `dna.register_with_contact_info(..)` | `client.domains().register_with_contacts(..)` |
+| `dna.renew(domain, period)` | `client.domains().renew(domain, years)` |
+| `dna.transfer(domain, epp_code, period)` | `client.domains().transfer(DomainTransferRequest::new(domain, auth_code).years(years))` |
+| `dna.check_transfer(domain, auth_code)` | `client.domains().transfer_check(domain, auth_code)` |
+| `dna.modify_name_server(..)` | `client.domains().set_name_servers(..)` |
+| `dna.enable_theft_protection_lock(domain)` | `client.domains().lock(domain)` |
+| `dna.modify_privacy_protection_status(..)` | `client.domains().set_privacy(..)` |
+| `dna.save_contacts(..)` | `client.domains().update_contacts(..)` |
+| `dna.add_child_name_server(..)` | `client.domains().child_name_servers().add(..)` |
+| `dna.get_resource_records(domain)` | `client.dns().list(domain)` |
+| `dna.add_resource_record(..)` | `client.dns().add(..)` |
+| `dna.set_resource_record_set(..)` | `client.dns().update(..)` |
+| `dna.apply_resource_records(domain)` | `client.dns().apply(domain)` |
+| `dna.set_forwarding(..)` | `client.domains().forwarding().set(..)` |
+| `dna.get_tld_list(..)` | `client.products().all_tlds(..)` |
+| `result["result"] == "ERROR"` | `Err(e)` con `e.kind()` e `e.code()` |
 
-| CODICE | DETTAGLIO |
-|--------|-----------|
-| 500 | ID dominio non valido. |
-| 500 | ID dominio non valido ({0}). |
-| 501 | Il dominio non può essere sincronizzato({0}) |
-| 502 | Trasferimento interno fallito |
-| 503 | La registrazione del dominio non è disponibile. |
-| 504 | Le informazioni del dominio non corrispondono .. Prima :{0} |
-| 505 | Inserisci l'indirizzo IP. |
-| 506 | Il trasferimento del dominio è stato avviato ma le informazioni di contatto non possono essere lette .. |
-| 507 | Errore di autorizzazione. |
-| 510 | Dominio non trovato. |
-| 511 | I domini scaduti non possono essere trovati. |
-| 512 | Il dominio non è rinnovabile. |
-| 513 | Il dominio non è in stato aggiornabile. Deve essere attivo per essere aggiornato |
-| 514 | Periodo di redenzione previsto. |
-| 520 | Comando Api non valido per il dominio "{0}". |
-| 530 | Periodo di dominio non valido. Il periodo deve essere da {0} a {1} anni. Il periodo richiesto è {2} anni. |
-| 540 | Il dominio non può essere esteso oltre {0} anni dalla data attuale. |
-| 550 | Nome di dominio non valido. Il dominio deve essere lungo da {0} a {1} caratteri. Il nome di dominio richiesto è di {2} caratteri. |
-| 560 | Numero di name server non valido. Il dominio deve avere da {0} a {1} name server. Il numero di name server richiesto è {2}. |
-| 561 | Nessuna informazione name server trovata nella richiesta in arrivo |
-| 570 | Idn non supportato per tld "{0}". |
-| 571 | Periodo non valido. |
-| 572 | Comando non valido. |
-| 573 | Nomi di dominio non trovati. |
-| 574 | Nomi TLD non trovati. |
-| 575 | Il dominio non è in stato aggiornabile. Deve essere attivo per aggiornare i name server |
-| 576 | Il dominio può essere rinnovato nell'ultimo mese prima della data di scadenza |
-| 580 | Trasferimento non supportato per tld "{0}". |
-| 581 | Child name server non trovato |
-| 582 | Trasferimento avviato da altro rivenditore. |
-| 583 | Trasferimento non inizializzato. Contatta il team di supporto. |
-| 584 | Lo stato dell'oggetto vieta l'operazione |
-| 590 | Il codice di autorizzazione è richiesto per questo trasferimento. |
-| 591 | Il codice di autorizzazione non è valido. |
-| 592 | Esiste un blocco di trasferimento sul dominio. |
-| 593 | Il dominio non può essere trasferito, le informazioni di stato e il blocco di trasferimento devono rispettare i criteri richiesti. (Informazioni di stato: #ok) |
-| 594 | L'indirizzo del name server di dominio non può essere risolto ({0}) |
-| 595 | Le informazioni di contatto non possono essere lette (whois.registrar.tld) Assicurati che lo stato di protezione della privacy sia aperto |
-| 596 | Le informazioni di contatto non possono essere verificate |
-| 597 | Tld non trovato |
-| 598 | Si è verificato un errore sconosciuto |
-| 599 | Inoltro di dominio non trovato |
+Le chiamate di approvazione, annullamento e rifiuto del trasferimento e `sync_from_registry` della 1.x non fanno parte del documento
+dell'API REST e non hanno un equivalente nella 2.0. La MSRV resta 1.83; `ureq` è sostituito da `reqwest`, quindi la 2.0 richiede un runtime Tokio.
+La 1.x inviava report di errore a Sentry; la 2.0 non invia nulla a nessuno, tranne che all'API.
+
+## Link
+
+- [CLI `dna` e server MCP](https://github.com/domainreseller/cli): la stessa API dal terminale e dagli agenti AI.
+- [Documentazione dell'API](https://www.domainnameapi.com/docs/)
+- [Changelog](CHANGELOG.md)
 
 ## Licenza
 
-Apache License 2.0 — vedi [LICENSE](LICENSE).
+Apache License 2.0. Vedi [LICENSE](LICENSE).

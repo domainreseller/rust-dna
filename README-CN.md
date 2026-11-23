@@ -10,1094 +10,769 @@
   <a href="README-IT.md"> | IT <img style="padding-top: 8px" src="https://raw.githubusercontent.com/yammadev/flag-icons/master/png/IT.png" alt="IT" height="20" /></a>
 </div>
 
-# rust-dna — 适用于 Rust 的 DomainNameAPI 客户端
+# DomainNameAPI Rust SDK (rust-dna)
 
-DomainNameAPI 域名注册商 REST API 的 Rust 客户端。它是参考 PHP 库 [php-dna](https://github.com/domainreseller/php-dna) 的忠实移植：相同的方法、相同的网络请求和相同的返回值。每个移植版本都通过 php-dna 的 134 个一致性测试用例（conformance fixtures）进行验证。
+<p>
+  <a href="https://github.com/domainreseller/rust-dna/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/domainreseller/rust-dna/ci.yml?branch=main&label=CI&style=flat-square" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-0B8DB5?style=flat-square" alt="Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/Rust-1.83%2B-0B8DB5?style=flat-square" alt="Rust 1.83+">
+</p>
 
-## 📦 下载 — 请务必使用 Releases！
-
-⬇️ **在此获取最新的已测试版本：https://github.com/domainreseller/rust-dna/releases/latest**
-
-> ⚠️ **不要**使用绿色的 **Code → Download ZIP** 按钮 — 它下载的是原始开发分支。Release 包带有版本号、经过测试，可直接用于生产环境。
-
-## 安装和集成指南
-
-### 最低要求
-
-- Rust 1.83 或更高版本（2021 edition）
-- 无需异步运行时：API 是阻塞式的
-- 运行时依赖：`ureq`（HTTP，rustls TLS）、`rustls` 和 `serde_json`。不需要 OpenSSL。
-
-### 安装
-
-**A) Git 依赖（固定到某个 release 标签）**
-
-```toml
-[dependencies]
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.1" }
-```
-
-**B) 下载的 release 包**
-
-将 release 压缩包解压到项目旁边，并让 Cargo 指向它：
-
-```toml
-[dependencies]
-domainnameapi = { path = "../rust-dna" }
-```
-
-该 crate 重新导出了 `serde_json::Value` 和 `json!` 宏，因此无需自行添加 `serde_json`（如有需要也可以添加）。
-
-## 🔑 API 凭据 — Reseller ID 与 API Key
-
-本库与 DomainNameAPI REST API 通信，恰好需要两个凭据，并通过构造函数传入：
-
-| 参数 | 值 |
-|---|---|
-| 第一个 | Reseller ID — 形如 `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` 的 UUID |
-| 第二个 | API Key |
-
-> 💡 您可以在 DomainNameAPI 面板的 **API 设置** 中找到您的 **Reseller ID** 和 **API Key**。
-> ⚠️ 这些是 **API 凭据** — 您的面板登录信息在此处**无效**。
+[Domain Name API](https://www.domainnameapi.com) 经销商平台的官方 Rust SDK。它用带类型的请求和模型覆盖了 REST API 的全部
+67 个操作：域名、联系人、DNS、DNSSEC、SSL 证书、主机、订单、产品和你的账户。
 
 ```rust
-use domainnameapi::DomainNameApi;
+let client = Client::builder().credentials(reseller_id, api_key).environment(Environment::Ote).build()?;
 
-let reseller_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
-let api_key = "your-api-key";
-
-// Live environment
-let mut dna = DomainNameApi::new(reseller_id, api_key, false);
-
-// Test (OTE) environment
-let mut dna = DomainNameApi::new(reseller_id, api_key, true);
+let search = client.domains().search("example.com").await?;
+if search.info.is_available() {
+    let request = DomainRegisterWithContactsRequest::new("example.com", DomainContacts::same(contact), ["tr.apiname.com", "eu.apiname.com"]);
+    client.domains().register_with_contacts(request).await?;
+}
 ```
 
-两个凭据的首尾空白都会被去除。由于面板常将复选框保存为文本，第三个参数也接受字符串：`"true"`、`"1"`、`"on"` 和 `"yes"`（不区分大小写）选择测试环境，其他任何值（包括 `"false"` 和 `"off"`）选择正式环境。
+- **处处有类型。** 每个操作都是一个请求类型，每个响应都是一个带文档的 struct。没有 Map，也不用解析 JSON。
+- **自定义请求。** 每个请求都实现了 `Request` trait。SDK 尚未覆盖的端点，可以自己实现该 trait 来调用。
+- **涉及资金时更安全。** 每个请求都会声明自己是读取、写入、扣除余额还是删除数据。需付费的请求绝不会重试，只读模式会阻止一切更改。
+- **内置容错。** 自动遵守速率限制，429 响应会重试，读取请求遇到网络错误也会重试。
+- **清晰的错误。** 只有一种 `Error` 类型，带有稳定的错误类别、API 的错误代码、字段级验证错误、关联 ID 和提示。
+- **现代 Rust。** 基于 Tokio 的异步、使用 rustls 的 `reqwest`（不依赖 OpenSSL）、serde 模型、以 `Stream` 形式惰性分页、可克隆的 `Send + Sync` 客户端，以及 `#![deny(missing_docs)]`。
+- **注重隐私。** 没有遥测。除了你发往 API 的请求之外，不会有任何数据离开你的进程。
+
+它是 [`dna`（Domain Name API CLI）](https://github.com/domainreseller/cli) 的 Rust 对应版本：使用同一份 API
+文档、同样的操作和分组、同样的安全类别、重试规则和错误代码。
+
+## 目录
+
+- [安装](#安装)
+- [凭据](#凭据)
+- [快速开始](#快速开始)
+- [配置](#配置)
+- [用法](#用法)：[账户](#账户) · [域名](#域名) · [联系人](#联系人) · [DNS](#dns) · [DNSSEC](#dnssec) · [SSL](#ssl) · [主机](#主机) · [订单与产品](#订单与产品)
+- [请求与 `Request` trait](#请求与-request-trait)
+- [错误](#错误)
+- [安全、重试与速率限制](#安全重试与速率限制)
+- [异步代码与阻塞代码](#异步代码与阻塞代码)
+- [测试你的代码](#测试你的代码)
+- [项目结构](#项目结构)
+- [开发](#开发)
+- [从 1.x 升级](#从-1x-升级)
+
+## 安装
+
+> [!IMPORTANT]
+> **请始终使用[最新版本](https://github.com/domainreseller/rust-dna/releases/latest)。** 发布包均带有版本号并经过测试。
+> 绿色的 **Code → Download ZIP** 按钮下载的是开发分支。
+
+```toml
+[dependencies]
+domainnameapi = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+futures-util = "0.3"   # 用于读取 list_all 返回的流
+```
+
+在该 crate 发布到 crates.io 之前，请从发布标签获取：
+
+```toml
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.0.0" }
+```
+
+**要求：** Rust 1.83 或更高版本，以及一个 Tokio 运行时。依赖为 `reqwest`（使用 rustls，不依赖 OpenSSL）、
+`serde`/`serde_json`、`tokio`（仅用于计时器）、`futures-util`、`chrono`、`base64` 和 `httpdate`。
+
+## 凭据
+
+API 用两个值验证每个请求，SDK 会替你发送它们：
+
+| 值 | 请求头 | 在哪里找到 |
+|---|---|---|
+| Reseller ID（一个 UUID） | `__reseller` | 经销商面板 → **API 设置** |
+| API Key | `X-API-KEY` | 经销商面板 → **API 设置** |
+
+> [!NOTE]
+> 这些是 **API 凭据**：你的面板登录信息在这里无法使用。**正式环境和 OTE（测试环境）使用
+> 不同的 API Key。** 混用会失败，并返回 `INVALID_API_KEY` 或 `INVALID_RESELLER`。
 
 ## 快速开始
 
 ```rust
-use domainnameapi::DomainNameApi;
+use domainnameapi::contacts::Contact;
+use domainnameapi::domains::{DomainContacts, DomainListRequest, DomainRegisterWithContactsRequest};
+use domainnameapi::{Client, Environment};
+use futures_util::TryStreamExt;
 
-fn main() {
-    let mut dna = DomainNameApi::new("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "your-api-key", false);
+#[tokio::main]
+async fn main() -> Result<(), domainnameapi::Error> {
+    // OTE 是测试环境：真实的 API，独立的数据，不涉及真实资金。
+    let client = Client::builder()
+        .credentials("your-reseller-id", "your-api-key")
+        .environment(Environment::Ote)
+        .build()?;
 
-    let details = dna.get_details("example.com");
-    if details["result"] == "OK" {
-        println!("Expires: {}", details["data"]["Dates"]["Expiration"]);
-    } else {
-        eprintln!("{}: {}", details["error"]["Code"], details["error"]["Message"]);
+    // 1. 检查凭据和余额。
+    let account = client.account().get().await?;
+    println!("{}: {} USD", account.reseller_name, account.usd_balance);
+
+    // 2. 该域名是否可注册，价格是多少？
+    let search = client.domains().search("my-new-domain.com").await?;
+    println!("{} {} {}", search.info.status, search.info.price, search.info.currency);
+
+    // 3. 用同一个联系人担任全部四种角色来注册。这会扣除余额。
+    let contact = Contact {
+        first_name: "Ada".into(),
+        last_name: "Lovelace".into(),
+        email: "ada@example.com".into(),
+        address: "1 Example Street".into(),
+        city: "Istanbul".into(),
+        state: "Istanbul".into(),
+        postal_code: "34000".into(),
+        country: "TR".into(),
+        phone_country_code: "90".into(),
+        phone: "5551234567".into(),
+        ..Default::default()
+    };
+    let request = DomainRegisterWithContactsRequest::new(
+        "my-new-domain.com",
+        DomainContacts::same(contact),
+        ["tr.apiname.com", "eu.apiname.com"],
+    );
+    let result = client.domains().register_with_contacts(request).await?;
+    println!("{} {}, expires {:?}", result.success, result.status, result.expiration_date);
+
+    // 4. 列出所有域名；读取流时才会获取各页。
+    let mut domains = client.domains().list_all(DomainListRequest::new());
+    while let Some(domain) = domains.try_next().await? {
+        println!("{} expires in {} days", domain.domain_name, domain.remaining_days);
     }
+    Ok(())
 }
 ```
 
-[examples/](examples) 中的每个示例都可以通过 `cargo run --example <名称>` 运行，例如 `cargo run --example get_details`。
-
-## API 的结构
-
-- **只有一个客户端类型**：`DomainNameApi`。方法接收 `&mut self`（客户端会记住最近一次请求，用于诊断）。
-- **返回值为 `serde_json::Value`**，其结构与 php-dna 返回的完全一致 — 而不是强类型模型。键名、字符串标志（`"true"` / `"false"`）、格式化的金额字符串（`"11.9900"`）以及外层结构（envelope）完全相同：
-  - 成功：`{"result": "OK", "data": {...}}`
-  - 失败：`{"result": "ERROR", "error": {"Code": "...", "Message": "...", "Details": "..."}}`
-  - 少数方法使用沿袭自 php-dna 的其他外层结构：`get_current_balance` 返回 `OperationResult` 对象，`check_availability` 成功时返回普通列表，`get_reseller_details` 在顶层返回其字段。
-- **错误以返回值形式给出，从不抛出。** 网关错误、HTTP 错误和网络故障都会以错误结构返回；不会引发 panic。当网关以 HTTP 200 返回 `success: false` 时，注册、转移和续费同样会返回错误。
-- **结构化输入**（联系人、域名服务器列表、筛选条件、TLD 属性、记录内容）是用 `json!` 构建的 `&Value`。联系人映射使用 php-dna 的键（`FirstName`、`EMail`、`AddressLine1`、`PhoneCountryCode`……）；平铺和嵌套（`Address.Line1`、`Phone.Phone.Number`）两种联系人格式均被接受。域名服务器列表可以是列表或映射（使用其中的值）。
-- **Rust 没有默认参数。** 每个方法都按相同顺序接收 php-dna 的完整参数列表。php-dna 的默认值以常量形式导出：`DEFAULT_TTL`（3600）、`DEFAULT_REASON`（"Owner request"）、`DEFAULT_FORWARD_TYPE`（"Standard"）、`DEFAULT_CURRENCY`（"USD"）、`DEFAULT_TLD_COUNT`（20）、`DEFAULT_COMMAND`（"create"）。带有四个可选参数的 `register_with_contact_info` 还提供 `register_with_contact_info_opts`，它接收一个 `RegisterOptions` 结构体，其 `Default` 即为 php-dna 的默认值。
-
-## 使用方法
-
-所有代码片段均假定已有 `use domainnameapi::{json, DomainNameApi};` 和客户端 `let mut dna = DomainNameApi::new(...)`。
-
-#### 域名注册
-
-注意：.tr 域名需要额外参数。额外属性参数用于需要额外信息的域名，例如 .tr。
-
-```rust
-let contact = json!({
-    "FirstName": "John",
-    "LastName": "Doe",
-    "Company": "Example Corp",
-    "EMail": "john.doe@example.com",
-    "AddressLine1": "123 Lorem Street",
-    "AddressLine2": "Suite 456",
-    "AddressLine3": "",
-    "City": "Springfield",
-    "Country": "US",
-    "Fax": "1234567890",
-    "FaxCountryCode": "1",
-    "Phone": "9876543210",
-    "PhoneCountryCode": 1,
-    "Type": "Contact",
-    "ZipCode": "12345",
-    "State": "IL"
-});
-let contacts = json!({
-    "Administrative": contact,
-    "Billing": contact,
-    "Technical": contact,
-    "Registrant": contact
-});
-
-let result = dna.register_with_contact_info(
-    "example.com",
-    1,
-    &contacts,
-    &json!(["ns1.example.com", "ns2.example.com"]),
-    true,  // registrar (theft protection) lock
-    false, // privacy protection
-    &json!({}),
-);
-
-// Same, with php-dna's defaults for the optional arguments
-// (default nameservers, lock on, privacy off, no attributes):
-use domainnameapi::RegisterOptions;
-let result = dna.register_with_contact_info_opts("example.com", 1, &contacts, &RegisterOptions::default());
-```
-
-对于 `.tr` 域名，请传入 TRABIS 属性。本库只发送网关接受的属性（`TRABISDOMAINCATEGORY`、`TRABISCITIZENID`、`TRABISTAXOFFICE`、`TRABISTAXNUMBER`），将 `1`/`0` 映射为 `Owner`/`Corporate`，并修正旧的拼写 `TRABISCITIZIENID`：
-
-```rust
-let result = dna.register_with_contact_info_opts(
-    "example.com.tr",
-    1,
-    &contacts,
-    &RegisterOptions {
-        name_servers: json!(["ns1.example.com", "ns2.example.com"]),
-        additional_attributes: json!({
-            "TRABISDOMAINCATEGORY": 1,
-            "TRABISCITIZIENID": "12345678901",
-            "TRABISNAMESURNAME": "John Doe",
-            "TRABISCOUNTRYID": "840",
-            "TRABISCITYID": "17"
-        }),
-        ..RegisterOptions::default()
-    },
-);
-```
-
-<details>
-<summary>域名注册的示例输出</summary>
-
-```json
-{
-  "data": {
-    "ID": 123456,
-    "Status": "Active",
-    "DomainName": "example.com",
-    "AuthCode": "Xy9#mK2$pL5@vN8",
-    "LockStatus": "true",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "false",
-    "Contacts": {
-      "Billing": {"ID": 987654},
-      "Technical": {"ID": 987654},
-      "Administrative": {"ID": 987654},
-      "Registrant": {"ID": 987654}
-    },
-    "Dates": {
-      "Start": "2024-03-15T10:00:00",
-      "Expiration": "2025-03-15T10:00:00",
-      "RemainingDays": 365
-    },
-    "NameServers": ["ns1.example.com", "ns2.example.com"],
-    "Additional": [],
-    "ChildNameServers": []
-  },
-  "result": "OK"
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 域名续费
-
-```rust
-let result = dna.renew("example.com", 1);
-```
-
-<details>
-<summary>域名续费的示例输出</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "ExpirationDate": "2025-03-15T10:00:00"
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 域名转移
-
-转移从不发送联系人信息：注册商会从原注册商接管联系人，因此每个转移请求都携带 `contacts: []`。
-
-```rust
-let result = dna.transfer("example.com", "Xy9#mK2$", 3);
-```
-
-<details>
-<summary>域名转移的示例输出</summary>
-
-```json
-{
-  "data": {
-    "ID": 0,
-    "Status": "Active",
-    "DomainName": "",
-    "AuthCode": "",
-    "LockStatus": "false",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "false",
-    "Contacts": {
-      "Billing": {"ID": 0},
-      "Technical": {"ID": 0},
-      "Administrative": {"ID": 0},
-      "Registrant": {"ID": 0}
-    },
-    "Dates": {"Start": "", "Expiration": "2027-11-09T12:00:00", "RemainingDays": 365},
-    "NameServers": [],
-    "Additional": [],
-    "ChildNameServers": []
-  },
-  "result": "OK"
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 转移管理
-
-```rust
-// Can the domain be transferred with this auth code?
-let check = dna.check_transfer("example.com", "Xy9#mK2$");
-
-// Cancel an incoming transfer, approve or reject an outgoing one
-let result = dna.cancel_transfer("example.com");
-let result = dna.approve_transfer("example.com");
-let result = dna.reject_transfer("example.com");
-```
-
-<details>
-<summary>转移管理的示例输出</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "TransferAvailabilityStatus": true,
-    "AuthCodeIsRequired": true,
-    "AuthCodeIsValid": true,
-    "UserTransferRequired": false,
-    "TransferLock": false,
-    "Message": "Domain can be transferred",
-    "MessageKey": "TransferAvailable",
-    "Additional": []
-  }
-}
-```
-
-当注册局报告域名不可转移时，`check_transfer` 返回 `"result": "ERROR"` 以及 `error`（`TRANSFER_NOT_AVAILABLE`）；两种情况下 `data` 都会填充。`cancel_transfer`、`approve_transfer` 和 `reject_transfer` 返回：
-
-```json
-{"result": "OK", "data": {"DomainName": "example.com", "Status": "Cancelled"}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 域名列表
-
-```rust
-let result = dna.get_list(&json!({
-    "OrderColumn": "Id",
-    "OrderDirection": "ASC",
-    "PageNumber": 0,
-    "PageSize": 1000
-}));
-
-// No filters:
-let result = dna.get_list(&json!({}));
-```
-
-`PageNumber` 从 0 开始。也可以传入网关自身的 `MaxResultCount`、`SkipCount` 和 `Sorting`，以及 `DomainName` 等筛选条件。
-
-<details>
-<summary>域名列表的示例输出</summary>
-
-```json
-{
-  "data": {
-    "Domains": [
-      {
-        "ID": 564346,
-        "Status": "Active",
-        "DomainName": "example.com",
-        "AuthCode": "",
-        "LockStatus": "true",
-        "PrivacyProtectionStatus": "false",
-        "IsChildNameServer": "false",
-        "Contacts": {
-          "Billing": {"ID": ""},
-          "Technical": {"ID": ""},
-          "Administrative": {"ID": ""},
-          "Registrant": {"ID": ""}
-        },
-        "Dates": {
-          "Start": "2024-03-15T10:00:00",
-          "Expiration": "2025-03-15T10:00:00",
-          "RemainingDays": 365
-        },
-        "NameServers": ["ns1.example.com", "ns2.example.com"],
-        "Additional": [],
-        "ChildNameServers": []
-      }
-    ]
-  },
-  "result": "OK",
-  "TotalCount": 1
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### TLD 列表
-
-```rust
-let result = dna.get_tld_list(100);
-```
-
-<details>
-<summary>TLD 列表的示例输出</summary>
-
-```json
-{
-  "data": [
-    {
-      "id": 1,
-      "status": "Active",
-      "maxchar": 63,
-      "maxperiod": 10,
-      "minchar": 1,
-      "minperiod": 1,
-      "tld": "com",
-      "pricing": {
-        "registration": {"1": "10.8100"},
-        "renew": {"1": "11.0100"},
-        "transfer": {"1": "10.6100"},
-        "restore": {"1": "99.9000"}
-      },
-      "currencies": {
-        "registration": "USD",
-        "renew": "USD",
-        "transfer": "USD",
-        "restore": "USD"
-      }
-    }
-  ],
-  "result": "OK"
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 域名可用性查询
-
-```rust
-let result = dna.check_availability(["hello", "world123x0"], ["com", "net"], 1, "create");
-```
-
-<details>
-<summary>域名可用性查询的示例输出</summary>
-
-成功时结果是一个普通列表（没有 `result` 键）；失败时为错误结构。
-
-```json
-[
-  {
-    "TLD": "com",
-    "DomainName": "hello",
-    "Status": "notavailable",
-    "Command": "create",
-    "Period": 1,
-    "IsFee": false,
-    "Price": "10.8100",
-    "Currency": "USD",
-    "Reason": "Domain exists"
-  },
-  {
-    "TLD": "com",
-    "DomainName": "world123x0",
-    "Status": "available",
-    "Command": "create",
-    "Period": 1,
-    "IsFee": false,
-    "Price": "10.8100",
-    "Currency": "USD",
-    "Reason": null
-  }
-]
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 域名详情
-
-```rust
-let result = dna.get_details("example.com");
-
-// Re-read the domain from the registry (same result shape):
-let result = dna.sync_from_registry("example.com");
-```
-
-<details>
-<summary>域名详情的示例输出</summary>
-
-```json
-{
-  "data": {
-    "ID": 564346,
-    "Status": "Active",
-    "DomainName": "example.com",
-    "AuthCode": "DHQ!K52",
-    "LockStatus": "true",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "true",
-    "Contacts": {
-      "Billing": {"ID": "DNA-B-4"},
-      "Technical": {"ID": "DNA-T-3"},
-      "Administrative": {"ID": "DNA-A-2"},
-      "Registrant": {"ID": "DNA-R-1"}
-    },
-    "Dates": {
-      "Start": "2025-05-26T16:08:37",
-      "Expiration": "2027-05-26T16:08:37",
-      "RemainingDays": 449
-    },
-    "NameServers": ["ns1.example.com", "ns2.example.com"],
-    "Additional": {"TRABISDOMAINCATEGORY": "1"},
-    "ChildNameServers": [
-      {"ns": "ns1.example.com", "ip": "1.2.3.4"}
-    ]
-  },
-  "result": "OK"
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 修改域名服务器
-
-```rust
-let result = dna.modify_name_server("example.com", &json!(["ns1.example.com", "ns2.example.com"]));
-```
-
-<details>
-<summary>修改域名服务器的示例输出</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServers": ["ns1.example.com", "ns2.example.com"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 启用域名锁
-
-```rust
-let result = dna.enable_theft_protection_lock("example.com");
-```
-
-<details>
-<summary>启用域名锁的示例输出</summary>
-
-```json
-{"result": "OK", "data": {"LockStatus": true}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 禁用域名锁
-
-```rust
-let result = dna.disable_theft_protection_lock("example.com");
-```
-
-<details>
-<summary>禁用域名锁的示例输出</summary>
-
-```json
-{"result": "OK", "data": {"LockStatus": false}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 添加子域名服务器
-
-```rust
-let result = dna.add_child_name_server("example.com", "ns1.example.com", "1.2.3.4");
-```
-
-<details>
-<summary>添加子域名服务器的示例输出</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServer": "ns1.example.com",
-    "IPAdresses": ["1.2.3.4"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 删除子域名服务器
-
-```rust
-let result = dna.delete_child_name_server("example.com", "ns1.example.com");
-```
-
-<details>
-<summary>删除子域名服务器的示例输出</summary>
-
-```json
-{"result": "OK", "data": {"NameServer": "ns1.example.com"}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 更新子域名服务器
-
-```rust
-let result = dna.modify_child_name_server("example.com", "ns1.example.com", "1.2.3.4");
-```
-
-<details>
-<summary>更新子域名服务器的示例输出</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServer": "ns1.example.com",
-    "IPAdresses": ["1.2.3.4"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 修改域名隐私保护
-
-`status` 可以是 `bool`，也可以是面板保存的值：`"1"`、`"on"`、`"true"`、`"yes"` 和 `1` 表示开启，其他任何值表示关闭。原因（reason）参数仅为兼容而保留，不会被发送，因为网关没有该字段。
-
-```rust
-let result = dna.modify_privacy_protection_status("example.com", true, "Owner request");
-```
-
-<details>
-<summary>修改域名隐私保护的示例输出</summary>
-
-```json
-{"data": {"PrivacyProtectionStatus": true}, "result": "OK"}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 获取域名联系人
-
-```rust
-let result = dna.get_contacts("example.com");
-```
-
-<details>
-<summary>获取域名联系人的示例输出</summary>
-
-```json
-{
-  "data": {
-    "contacts": {
-      "Administrative": {
-        "ID": "DNA-A-2",
-        "Status": "Active",
-        "AuthCode": "",
-        "FirstName": "John",
-        "LastName": "Doe",
-        "Company": "Example Corp",
-        "EMail": "john@example.com",
-        "Type": "Administrative",
-        "Address": {
-          "Line1": "123 Main Street",
-          "Line2": "",
-          "Line3": "",
-          "State": "IL",
-          "City": "Springfield",
-          "Country": "US",
-          "ZipCode": "62701"
-        },
-        "Phone": {
-          "Phone": {"Number": "5551234567", "CountryCode": "1"},
-          "Fax": {"Number": "", "CountryCode": ""}
-        },
-        "Additional": []
-      },
-      "Billing": {"...": "same shape"},
-      "Registrant": {"...": "same shape"},
-      "Technical": {"...": "same shape"}
-    }
-  },
-  "result": "OK"
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 保存域名联系人
-
-```rust
-let contact = json!({
-    "FirstName": "John",
-    "LastName": "Doe",
-    "Company": "Example Corp",
-    "EMail": "john@example.com",
-    "AddressLine1": "123 Main Street",
-    "AddressLine2": "",
-    "AddressLine3": "",
-    "City": "Springfield",
-    "Country": "US",
-    "Fax": "5559876543",
-    "FaxCountryCode": "1",
-    "Phone": "5551234567",
-    "PhoneCountryCode": 1,
-    "Type": "Contact",
-    "ZipCode": "62701",
-    "State": "IL"
-});
-
-let result = dna.save_contacts("example.com", &json!({
-    "Administrative": contact,
-    "Billing": contact,
-    "Technical": contact,
-    "Registrant": contact
-}));
-```
-
-<details>
-<summary>保存域名联系人的示例输出</summary>
-
-```json
-{"result": "OK", "data": {"contacts": []}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### DNS 区域记录
-
-网关以**记录集**的形式存储记录（一个名称 + 类型，包含一个或多个值）。写入记录集会替换其全部值，删除其中任意一个值会删除整个记录集。`*_value` 方法会替你完成"读取-合并-写入"，使面板可以逐条处理记录。名称可以是相对名称（`www`）、表示顶点（apex）的 `@` / 空字符串，或完全限定名称；它们会被归约为网关期望的相对标签。支持的类型：A、AAAA、ALIAS、CAA、CNAME、DS、MX、NAPTR、PTR、SRV、TLSA、TXT。当 `apply` 为 `true`（php-dna 的默认值）时更改会立即生效；否则请调用 `apply_resource_records`。由于网关会限制突发请求，区域调用之间至少间隔一秒。如果自动应用失败，该方法会返回应用错误（更改仍处于暂存状态）。结果中报告的是转换为大写的类型和实际发送的 TTL（小于 1 时变为 3600，大于 86400 时变为 86400）。
-
-```rust
-// List every record (one row per value; names come back as FQDNs)
-let records = dna.get_resource_records("example.com");
-
-// Make a set hold exactly these values (an empty list removes the set)
-dna.set_resource_record_set("example.com", "@", "MX", ["10 mx1.example.com", "20 mx2.example.com"], 3600, true);
-
-// Add, remove or replace one value, keeping the others (ttl None keeps the set's TTL)
-dna.add_resource_record_value("example.com", "@", "MX", "30 mx3.example.com", None, true);
-dna.remove_resource_record_value("example.com", "@", "MX", "30 mx3.example.com", true);
-dna.replace_resource_record_value("example.com", "@", "A", "192.0.2.1", "192.0.2.2", None, true);
-
-// Remove a whole set (pass a current value to save a lookup, or "")
-dna.delete_resource_record_set("example.com", "www", "CNAME", true, "");
-
-// Low-level calls, mirroring the gateway endpoints
-dna.add_resource_record("example.com", "www", "A", &json!("192.0.2.5"), 3600, true);
-dna.edit_resource_record("example.com", "www", "www", "A", &json!("192.0.2.6"), 600, true);
-dna.delete_resource_record("example.com", "www", "192.0.2.5", "A", true);
-dna.apply_resource_records("example.com");
-```
-
-<details>
-<summary>DNS 区域记录的示例输出</summary>
-
-`get_resource_records`：
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "records": [
-      {"Name": "example.com.", "Type": "A", "TTL": 3600, "Content": "192.0.2.1", "Disabled": false},
-      {"Name": "www.example.com.", "Type": "CNAME", "TTL": 300, "Content": "example.com.", "Disabled": false},
-      {"Name": "example.com.", "Type": "MX", "TTL": 3600, "Content": "10 mx1.example.com.", "Disabled": false}
-    ]
-  }
-}
-```
-
-`set_resource_record_set` / `add_resource_record_value`：
-
-```json
-{"result": "OK", "data": {"Name": "", "Type": "MX", "TTL": 3600, "Contents": ["10 mx1.example.com.", "20 mx2.example.com.", "30 mx3.example.com"]}}
-```
-
-已经存在的值（删除时为不存在的值）不会造成任何改变：
-
-```json
-{"result": "OK", "data": {"Name": "", "Type": "MX", "Contents": ["10 mx1.example.com."], "Changed": false}}
-```
-
-不支持的类型在发出任何请求之前即被拒绝：
-
-```json
-{"result": "ERROR", "error": {"Code": "ADD_ZONE", "Message": "Record type \"NS\" is not supported by the DNS zone API. Supported types: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT.", "Details": "..."}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### URL 转发
-
-```rust
-let current = dna.get_forwarding("example.com");
-let result = dna.set_forwarding("example.com", "https://www.example.org", "Standard"); // or "Frame" (masked)
-let result = dna.delete_forwarding("example.com");
-```
-
-<details>
-<summary>URL 转发的示例输出</summary>
-
-```json
-{"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org/landing", "ForwardType": "Frame"}}
-```
-
-未配置转发时（网关返回 `Redirect information not found`），`get_forwarding` 返回 `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}`；其他任何失败（例如域名不存在）都会作为错误返回。`set_forwarding` 返回 `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}`。`delete_forwarding` 返回 `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}`；若未设置转发则为 `"Removed": false`。
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 获取经销商详情
-
-```rust
-let result = dna.get_reseller_details();
-let balance = dna.get_current_balance("USD"); // "USD" or "TRY"
-```
-
-<details>
-<summary>获取经销商详情的示例输出</summary>
-
-```json
-{
-  "result": "OK",
-  "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "active": true,
-  "name": "Example Reseller",
-  "balance": "601.64",
-  "currency": "USD",
-  "symbol": "$",
-  "balances": [
-    {"balance": "601.64", "currency": "USD", "symbol": "$"},
-    {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
-  ]
-}
-```
-
-`get_current_balance`：
-
-```json
-{
-  "ErrorCode": 0,
-  "OperationMessage": "Command completed succesfully.",
-  "OperationResult": "SUCCESS",
-  "Balance": "601.64",
-  "CurrencyId": 2,
-  "CurrencyInfo": null,
-  "CurrencyName": "USD",
-  "CurrencySymbol": "$"
-}
-```
-
-账户只报告 USD 和 TRY 余额；其他任何货币（EUR、GBP……）都会以 `ErrorCode` `"BALANCE"` 失败。失败时 `OperationResult` 为 `"FAILED"`，`ErrorCode` 包含错误码（例如 `"API_429"`），`Balance` 为 `"0.00"`。
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### 实用工具（无需网络）
-
-```rust
-let is_tr = dna.is_tr_tld("example.com.tr"); // true
-
-// Complete and normalise a contact the way registration does
-let contact = dna.validate_contact(&json!({
-    "FirstName": " Jo ",
-    "Phone": "+1 (202) 555-0100",
-    "Country": "Turkey"
-}));
-```
-
-<details>
-<summary>validate_contact 的示例输出</summary>
-
-```json
-{
-  "FirstName": "Jo",
-  "Phone": "2025550100",
-  "Country": "TR",
-  "LastName": "Isimyok",
-  "AddressLine1": "Addres yok",
-  "City": "ISTANBUL",
-  "ZipCode": "34000",
-  "PhoneCountryCode": "1",
-  "State": "ISTANBUL",
-  "Fax": "",
-  "FaxCountryCode": ""
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-## 错误处理
-
-每个网络方法都会返回一个值；请检查 `result`：
-
-```rust
-let out = dna.get_details("missing.com");
-if out["result"] == "ERROR" {
-    println!("{}", out["error"]["Code"]);        // "API_404"
-    println!("{}", out["error"]["GatewayCode"]); // "Dna.DomainService:Domain:10007"
-    println!("{}", out["error"]["Message"]);     // "The domain name you requested could not be found. ..."
-    println!("{}", out["error"]["Details"]);
-}
-```
-
-- HTTP 错误使用 `API_<状态码>` 代码（`API_400`、`API_404`、`API_429`、`API_500`……）。空的错误响应体会转换为可读消息，例如 `HTTP 429 - Too Many Requests`。如果网关发送了自己的错误码，外层结构还会以 `GatewayCode` 携带它（例如 `"Dna.DomainService:Domain:10007"`）。
-- 301/302 响应表示凭据错误：`Invalid API credentials`。
-- 网关的校验错误会被合并到 `Details` 中，并指明字段，例如 `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
-- 网络故障属于错误，绝不会表现为空的成功。超时消息为 `Could not reach the DomainNameAPI service: the connection timed out. (...)`；其他故障消息为 `Curl error during request: ...`。其代码为 `CURL_<curl 错误号>`（超时为 `CURL_28`，DNS 为 `CURL_6`，连接被拒绝为 `CURL_7`）；`API_<n>` 仅用于 HTTP 状态码。
-- 本地校验（不支持的记录类型、缺少转发地址、没有要查询的域名）会在发出任何请求之前以描述性代码失败（`ADD_ZONE`、`SET_FORWARD`、`AVAILABILITY`……）。
-
-### 诊断
-
-```rust
-dna.get_request_data();        // {"url", "method", "payload"} of the last request
-dna.get_response_data();       // decoded last response, or {"raw_response": "<body>"}
-dna.get_response_headers();    // {"url", "content_type", "http_code", "total_time", "headers"}
-dna.get_parsed_response_data();// parsed body on success, {"Code", "Message", "Details"} on failure
-dna.get_last_function();       // e.g. "request:GET domains/info"
-dna.get_service_url();
-dna.set_service_url("https://ote.domainresellerapi.com/api/v1");
-```
-
-### 自定义传输层
-
-HTTP 层是 `Transport` trait。默认实现为 `UreqTransport`（基于 rustls 的阻塞式 `ureq`，总超时 30 秒、连接超时 10 秒，不跟随重定向）。可将其替换以支持代理、自定义客户端或测试：
-
-```rust
-use domainnameapi::{HttpRequest, HttpResponse, Transport, TransportError};
-
-struct MyTransport;
-impl Transport for MyTransport {
-    fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
-        // perform req.method on req.url with req.headers and req.body
-        Ok(HttpResponse { status: 200, body: "{}".into(), headers: vec![] })
-    }
-}
-
-dna.set_transport(Box::new(MyTransport));
-```
-
-## 测试模式
-
-将 `true`（或 `"true"`、`"1"`、`"on"`、`"yes"`）作为构造函数的第三个参数传入，即可使用位于 `https://ote.domainresellerapi.com/api/v1` 的 OTE 测试环境。正式调用发送至 `https://api.domainresellerapi.com/api/v1`。
-
-## 测试
-
-测试套件既不需要网络，也不需要凭据：
+[examples](examples) 文件夹中有针对这些场景的可运行程序（`quickstart`、`register`、`dns`、`ssl`、
+`custom_request`、`error_handling`）。它们读取 `DNA_*` 环境变量，因此请将它们指向 OTE：
 
 ```bash
-cargo test
+export DNA_RESELLER_ID=... DNA_API_KEY=... DNA_ENV=ote
+cargo run --example quickstart -- example.com
 ```
 
-其中包括针对 HTTP 层、错误映射、遥测脱敏和实用工具的单元测试，以及一个一致性测试：它重放 `tests/conformance/` 中全部 134 个 php-dna 测试用例，并检查每个发出的请求和每个返回值都与 php-dna 一致。
+## 配置
 
-## 错误报告（遥测）
-
-当 API 调用失败时，本库可以向 DomainNameAPI 自有的错误跟踪系统（Sentry）发送错误报告。成功调用中的一小部分随机样本（4%，外加所有耗时超过 1 秒的调用）会作为性能记录发送。这有助于 DomainNameAPI 发现并修复问题。错误报告**默认开启**。
-
-**发送的内容：**
-
-- 错误代码和消息
-- 被调用的端点路径和 HTTP 方法
-- 调用耗时
-- 应用名称（`DomainNameAPI-Rust`）和库版本
-- 经销商 ID 和域名
-- 服务器的公网 IP 地址（在后台通过 `api.ipify.org` 查询）
-- 操作系统用户名
-- API 请求和响应，包括域名的联系人信息；只有凭据会被屏蔽 — EPP/授权码、API 密钥、密码、密钥（secret）和令牌会被替换为 `***`
-
-**绝不发送的内容：** 可读形式的 EPP/授权码、API 密钥、密码或令牌。
-
-报告由后台线程以较短的超时时间发送；它们绝不会阻塞您的调用，也不会导致其失败。诸如"域名不存在"或"余额不足"之类的预期错误不会被报告。
-
-**原因及保存时长：** 这些数据仅用于使用量统计和问题的早期诊断，在 DomainNameAPI 自有的 Sentry 服务器上保存 30 天，之后自动删除。
-
-**如何关闭或减少：**
+创建客户端有三种方式：
 
 ```rust
-let mut dna = DomainNameApi::new(reseller_id, api_key, false);
-dna.set_error_reporting_enabled(false); // nothing is sent
+// 正式环境，默认设置
+let client = Client::new(reseller_id, api_key)?;
 
-// or keep it on but send only the error code and message, endpoint,
-// timing, versions and reseller ID (no request/response data, domain, IP or user name)
-dna.set_telemetry_minimal(true);
+// 全部设置
+let client = Client::builder()
+    .credentials(reseller_id, api_key)
+    .environment(Environment::Ote)
+    .timeout(Duration::from_secs(30))
+    .read_only(true)
+    .build()?;
+
+// 与 dna CLI 读取的环境变量相同 ...
+let client = Client::from_env()?;
+
+// ... 再加上你自己的设置
+let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 ```
 
-> 🔒 **安全：** TLS 证书验证处于开启状态。在 CA 证书包过旧的主机上，可以通过 `dna.set_ssl_verification(false);` 关闭 — 不建议这样做；更新 CA 证书包才是更好的解决办法。
+| `ClientBuilder` 方法 | 默认值 | 含义 |
+|---|---|---|
+| `credentials(reseller_id, api_key)` | （必填） | 凭据。其中任一为空时，`build()` 会以 `NO_CREDENTIALS` 失败。 |
+| `environment(...)` | `Production` | `Production`（`https://api.domainresellerapi.com`）或 `Ote`（`https://ote.domainresellerapi.com`）。 |
+| `base_url(...)` | 无 | 覆盖环境的地址，例如用于代理。路径前缀会被保留。 |
+| `timeout(...)` | 60 秒 | 单次尝试的时间限制。 |
+| `max_retries(...)` | 2 | 失败的请求重复多少次（见[重试](#安全重试与速率限制)）。0 表示关闭重试。 |
+| `max_retry_delay(...)` | 30 秒 | 重试前的最长等待时间。 |
+| `pace_requests(...)` | `true` | 控制请求间隔，使其保持在网关的速率限制之内。 |
+| `read_only(...)` | `false` | 在发送之前阻止所有非读取请求。 |
+| `user_agent(...)` | `DomainNameAPI-Rust/<version>` | `User-Agent` 请求头。 |
+| `http_client(...)` | SDK 自带的客户端 | 你自己的 `reqwest::Client`（代理、TLS 设置）。 |
 
-## 返回和错误代码及说明
+`from_env()` 会读取：
 
-| 代码 | 描述 | 详细 |
-|------|------|------|
-| 1000 | 命令成功完成 | 操作成功。 |
-| 1001 | 命令成功完成；操作待处理 | 操作成功。但是，操作当前已排队等待完成。 |
-| 2003 | 缺少必需参数 | 参数缺失错误。例如：联系信息中没有电话输入。 |
-| 2105 | 对象不符合续费条件 | 域名状态不适合续费，已锁定更新操作。状态不应为"clientupdateprohibited"。可能由于其他状态条件。 |
-| 2200 | 身份验证错误 | 授权错误，安全代码不正确或域名在另一个注册商处注册。 |
-| 2302 | 对象已存在 | 域名或名称服务器信息已存在于数据库中。无法注册。 |
-| 2303 | 对象不存在 | 域名或名称服务器信息在数据库中不存在。需要新注册。 |
-| 2304 | 对象状态禁止操作 | 域名状态不适合更新，已锁定更新操作。状态不应为"clientupdateprohibited"。可能由于其他状态条件。 |
+| 变量 | 含义 |
+|---|---|
+| `DNA_RESELLER_ID`、`DNA_API_KEY` | 凭据。 |
+| `DNA_ENV` | `production` 或 `ote`（也可用 `prod`、`live`、`test`、`sandbox`）。 |
+| `DNA_TEST_MODE` | `true`、`1`、`on` 或 `yes` 表示选择 OTE。未设置 `DNA_ENV` 时使用。 |
+| `DNA_BASE_URL` | 可选，覆盖基础地址。 |
+| `DNA_READ_ONLY` | `true` 表示开启只读模式。 |
 
-| 代码 | 详细 |
-|------|------|
-| 101 | 系统错误详细信息 ({0})！ |
-| 102 | 多个错误详细信息 ({0})！ |
-| 103 | 未知错误详细信息 ({0})！ |
-| 200 | 未找到 API 命令 ({0})！ |
-| 210 | 未找到 API 服务 ({0})！ |
-| 211 | 未设置 API 服务提供商！ |
-| 300 | 未找到经销商！ |
-| 301 | 您当前的 IP 地址未被授权访问。请确保您从授权的 IP 地址连接并重试 |
-| 310 | 不支持 TLD！ |
-| 320 | 未找到 API！ |
-| 321 | 不支持货币！ |
-| 330 | 未设置必需参数 ({0})。 |
-| – | 确保您完整发送所有联系对象 |
-| 340 | 未找到价格定义 ({0}[{1}]-{2}{3})。 |
-| 350 | 经销商余额不足。(经销商 Id : {0} - 当前余额 : {1} {2})。 |
-| 350 | 会计货币不匹配或余额不足。 |
-| 360 | 字段 ({0}) 的无效 API 请求。 |
-| 360 | API 配额已超出！ |
-| 361 | 限流错误！ |
-| 362 | 高级域名目前无法注册。 |
-| 363 | 由于域名处于自动续费期间，操作已取消 |
-| 364 | 由于注册处问题，此域名目前无法进行交易 |
+`Client` 实现了 `Clone + Send + Sync`，克隆开销很小（它内部持有一个 `Arc`）。每组凭据创建一个客户端，并在应用的整个
+生命周期内共享：请求间隔控制是按客户端进行的。
 
-| 代码 | 详细 |
-|------|------|
-| 400 | 无效联系人 ({0})。 |
-| 401 | 联系信息无法同步。 |
-| 402 | 无法从注册处访问联系信息。 |
-| 403 | 系统缺少信息。输入您的默认信息或联系支持团队。 |
-| 404 | 域名联系人无法更新。来自注册处的权限。 |
-| 410 | 未找到联系人。 |
-| 410 | 未找到联系人 ({0})。 |
-| 420 | 联系人 {0} 的无效 Api 命令。 |
-| 430 | 未找到联系人 api。 |
-| 440 | 联系人未同步。 |
-| 450 | 域名联系人太多..！ |
-| 451 | 无法继续进行联系人更新。 |
+## 用法
 
-| 代码 | 详细 |
-|------|------|
-| 500 | 无效域名 id。 |
-| 500 | 无效域名 id ({0})。 |
-| 501 | 域名无法同步({0}) |
-| 502 | 内部转移失败 |
-| 503 | 域名注册不可用。 |
-| 504 | 域名信息不匹配 .. 之前 :{0} |
-| 505 | 输入 IP 地址。 |
-| 506 | 域名转移已开始但无法读取联系信息 .. |
-| 507 | 授权错误。 |
-| 510 | 未找到域名。 |
-| 511 | 无法找到过期域名。 |
-| 512 | 域名不可续费。 |
-| 513 | 域名不处于可更新状态。必须处于活动状态才能更新 |
-| 514 | 预期赎回期。 |
-| 520 | 域名 "{0}" 的无效 Api 命令。 |
-| 530 | 无效域名期限。期限必须为 {0} 到 {1} 年。请求的期限为 {2} 年。 |
-| 540 | 域名无法延长到当前日期 {0} 年以后。 |
-| 550 | 无效域名。域名必须为 {0} 到 {1} 个字符长度。请求的域名为 {2} 个字符。 |
-| 560 | 无效名称服务器数量。域名必须有 {0} 到 {1} 个名称服务器。请求的名称服务器数量为 {2}。 |
-| 561 | 在传入请求中未找到名称服务器信息 |
-| 570 | tld "{0}" 不支持 Idn。 |
-| 571 | 期限无效。 |
-| 572 | 命令无效。 |
-| 573 | 未找到域名。 |
-| 574 | 未找到 TLD 名称。 |
-| 575 | 域名不处于可更新状态。必须处于活动状态才能更新名称服务器 |
-| 576 | 域名可在到期日期前最后 1 个月内续费 |
-| 580 | tld "{0}" 不支持转移。 |
-| 581 | 未找到子名称服务器 |
-| 582 | 转移由其他经销商发起。 |
-| 583 | 转移未初始化。请联系支持团队。 |
-| 584 | 对象状态禁止操作 |
-| 590 | 此转移需要授权代码。 |
-| 591 | 授权代码无效。 |
-| 592 | 域名上存在转移锁定。 |
-| 593 | 域名无法转移，状态信息和转移锁定必须符合所需标准。(状态信息: #ok) |
-| 594 | 域名服务器地址无法解析 ({0}) |
-| 595 | 无法读取联系信息 (whois.registrar.tld) 请确保隐私保护状态开放 |
-| 596 | 联系信息无法验证 |
-| 597 | 未找到 Tld |
-| 598 | 发生未知错误 |
-| 599 | 未找到域名转发 |
+API 的每个领域都有各自的客户端，命名与 CLI 的命令组一致：`client.account()`、
+`client.contacts()`、`client.domains()`（含 `forwarding()`、`child_name_servers()` 和 `documents()`）、
+`client.dns()`、`client.dnssec()`、`client.ssl()`、`client.hosting()`、`client.orders()` 和 `client.products()`。
+必填输入作为参数传入；带有可选输入的操作接受一个用 `new(...)` 构建、再链式调用 setter 的请求。
+会扣除余额的方法会在其文档中注明。
+
+### 账户
+
+```rust
+let account = client.account().get().await?;          // reseller_id, reseller_name, try_balance, usd_balance
+let profile = client.account().profile().await?;      // name, company_name, account_currency, status, ...
+
+// 本月的扣费记录，跨所有分页
+let request = AccountTransactionsRequest::new()
+    .charge_type(ChargeType::Subtract)
+    .start_date("2026-11-01T00:00:00Z".parse()?)
+    .transaction_types([TransactionType::Register, TransactionType::Renew]);
+let mut transactions = client.account().all_transactions(request);
+while let Some(t) = transactions.try_next().await? {
+    println!("{:?} {} {} {}", t.creation_time, t.transaction_type, t.amount, t.amount_currency);
+}
+```
+
+### 域名
+
+**搜索**
+
+```rust
+let one = client.domains().search("example.com").await?;
+let available = one.success && one.info.is_available();
+
+let many = client.domains().bulk_search(["example.com", "example.net", "example.com.tr"]).await?;
+for domain in many.available() {
+    println!("{}: {} {}", domain.domain_name, domain.price, domain.currency);
+}
+
+// 指定币种
+client.domains().search_with(DomainSearchRequest::new("example.com").currency("USD")).await?;
+```
+
+**列表与详情**
+
+```rust
+let page = client.domains().list(DomainListRequest::new().limit(50).statuses([DomainStatus::Active])).await?;
+
+let all: Vec<Domain> = client.domains().list_all(DomainListRequest::new().domain_name("example")).try_collect().await?;
+
+let info = client.domains().info("example.com").await?;
+println!("{} {:?}", info.auth_code, info.expiration_date);
+if let Some(registrant) = info.contact(ContactType::Registrant) {
+    println!("{}", registrant.email);
+}
+```
+
+**注册、续费、转移、恢复**（这些操作会扣除你的余额）
+
+```rust
+// 同一个联系人担任全部四种角色，两年
+let request = DomainRegisterWithContactsRequest::new("example.com", DomainContacts::same(contact.clone()), ["tr.apiname.com", "eu.apiname.com"])
+    .years(2);
+client.domains().register_with_contacts(request).await?;
+
+// 每个角色使用不同的联系人、注册局属性、受托服务
+let request = DomainRegisterWithContactsRequest::new(
+    "example.com.tr",
+    DomainContacts { registrant: Some(owner), admin: Some(staff.clone()), tech: Some(staff.clone()), billing: Some(staff) },
+    ["tr.apiname.com", "eu.apiname.com"],
+)
+.tld_attribute("<key>", "<value>"); // 可用的键：client.products().tld("com.tr").await?.unwrap().attributes
+
+// 使用已有的联系人句柄
+let request = DomainRegisterRequest::new("example.com", ContactHandles::same("DNA-12345"), ["tr.apiname.com", "eu.apiname.com"]);
+client.domains().register(request).await?;
+
+let renewal = client.domains().renew_check("example.com", Some(1)).await?;   // 免费
+if renewal.renewable {
+    client.domains().renew("example.com", 1).await?;
+}
+
+let check = client.domains().transfer_check("example.com", "EPP-CODE").await?;  // 免费
+if check.transferable {
+    client.domains().transfer(DomainTransferRequest::new("example.com", "EPP-CODE")).await?;
+}
+
+client.domains().restore("example.com").await?;
+```
+
+请求在发送之前会先经过检查。缺少四种联系人角色之一的注册、没有电子邮件地址的联系人，或注册期限为 0 年，
+都会返回一个列出全部问题的 `ErrorKind::InvalidInput` 错误，并且不会向 API 发送任何内容。
+
+> [!NOTE]
+> 对于注册、续费或转移，API 可能返回 HTTP 200 且 `"success": false`（例如注册局拒绝该域名时）。
+> 与 Java SDK 一样，SDK 会原样返回该响应：请检查 `DomainOperationResult::success` 和 `message`。
+> `SslOperationResult` 和 `ContactCreateResult` 同样如此。
+
+**设置**
+
+```rust
+client.domains().lock("example.com").await?;
+client.domains().unlock("example.com").await?;
+client.domains().set_privacy("example.com", true).await?;
+client.domains()
+    .set_name_servers(DomainNameServersSetRequest::new("example.com", ["ns1.example.net", "ns2.example.net"]))
+    .await?;
+client.domains()   // 已启用 DNSSEC 签名的域名
+    .set_name_servers(DomainNameServersSetRequest::new("example.com", ["ns1.example.net"]).dnssec_mode(DnssecMode::DisableDnssec))
+    .await?;
+let auth_code = client.domains().update_auth_code("example.com").await?;
+
+client.domains().update_contacts("example.com", DomainContacts::same(contact)).await?;
+client.domains().set_contact_handles("example.com", ContactHandles { tech: "DNA-12345".into(), ..Default::default() }).await?;
+```
+
+**URL 转发、子名称服务器与文档**
+
+```rust
+client.domains().forwarding().set("example.com", "https://www.example.net", ForwardType::Standard).await?;
+let forwarding = client.domains().forwarding().get("example.com").await?;   // 未设置时为 None
+client.domains().forwarding().delete("example.com").await?;
+
+// 每个地址的 IP 版本会被自动识别
+client.domains().child_name_servers().add("example.com", "ns1.example.com", ["192.0.2.10", "2001:db8::10"]).await?;
+client.domains().child_name_servers()
+    .update(DomainHostUpdateRequest::new("example.com", "ns1.example.com", ["192.0.2.20"]))
+    .await?;
+client.domains().child_name_servers().delete("example.com", "ns1.example.com").await?;
+
+// 注册局文档（主要用于 .tr）
+let document = DocumentUpload::from_file(DocumentType::IdentityCard, "id.pdf")?;
+client.domains().documents().upload("example.com.tr", [document]).await?;
+let documents: Vec<Document> = client.domains().documents().list_all("example.com.tr").try_collect().await?;
+```
+
+### 联系人
+
+联系人句柄（handle）是可重复使用的联系人。创建一次，即可用于多个域名。
+
+```rust
+let created = client.contacts().create(contact.clone()).await?;
+let handle = created.handle;                                         // 例如 DNA-12345
+
+let details = client.contacts().get(&handle).await?;                 // 联系人及其验证状态
+let result = client.contacts().update(&handle, contact).await?;
+println!("{} of {} domains updated", result.stats.success_count, result.stats.total_domain_count);
+
+let verifications = client.contacts().verification(&handle).await?;
+client.contacts().resend_verification(&handle).await?;
+```
+
+### DNS
+
+使用平台名称服务器的域名的区域记录。只有当域名使用这些名称服务器后，记录才会在公网上解析，
+这一步由 `apply` 负责。
+
+```rust
+for set in client.dns().list("example.com").await? {
+    println!("{} {} {} {:?}", set.name, set.record_type, set.ttl, set.values());
+}
+
+let dns = client.dns();
+dns.add(DnsAddRequest::new("example.com", "www", RecordType::A, ["192.0.2.10"])).await?;
+dns.add(DnsAddRequest::new("example.com", "@", "txt", ["v=spf1 include:_spf.example.net ~all"])).await?;   // "txt" 即 TXT
+dns.add(DnsAddRequest::new("example.com", "@", RecordType::Mx, ["10 mx1.example.net", "20 mx2.example.net"]).ttl(3600)).await?;
+dns.update(DnsUpdateRequest::new("example.com", "www", RecordType::A, ["192.0.2.20"]).ttl(300)).await?;
+dns.delete(DnsDeleteRequest::new("example.com", "www", RecordType::A, "192.0.2.20")).await?;
+
+let applied = dns.apply("example.com").await?;
+```
+
+SDK 会提前检查 API 会拒绝的情况：根域上的 CNAME、缺少优先级的 MX、缺少三个部分的 CAA 值、不是 IPv4 的 A 记录、
+超出 1–86400 范围的 TTL。区域调用之间会保持 1 秒间隔，这是网关的限制。OTE 测试环境对区域调用返回 HTTP 500，
+因此 DNS 相关代码只能在正式环境中试用。
+
+### DNSSEC
+
+```rust
+let info = client.dnssec().get("example.com").await?;      // status, ds_records, allowed_algorithms, ...
+
+let record: DsData = "12345 13 2 49FD46E6C4B45C55D4AC69CBD3CD34AC1AFE51DE".parse()?;
+client.dnssec().add("example.com", [record.clone()]).await?;
+client.dnssec().remove("example.com", record).await?;
+client.dnssec().disable("example.com").await?;            // 删除所有 DS 记录
+```
+
+### SSL
+
+一个域名可以有多张证书，因此已有的证书通过**证书 ID**（一个 GUID）来指定，而不是域名。
+`initialize` 和 `renew` 会返回该 ID：请保存它。`list` 可以查到你已有证书的 ID。
+
+```rust
+// 1. 购买（扣除余额）。套餐代码来自 client.products().ssls(...)。
+let approvers = client.ssl().approvers(SslApproversRequest::for_purchase("example.com", "PKG-CODE")).await?;
+let order = client.ssl().initialize("example.com", "PKG-CODE").await?;
+let certificate_id = order.certificate_id;                  // 请保存：之后的每个调用都需要它
+
+// 2. 如果还没有 CSR 和私钥，先生成
+let csr = client.ssl().generate_csr(
+    SslGenerateCsrRequest::new("example.com")
+        .country("TR").state("Istanbul").locality("Istanbul").organization("Example Ltd").organization_unit("IT"),
+).await?;
+
+// 3. 在 15 天内完成配置：CSR、验证方式和联系人
+client.ssl().configure(
+    SslConfigureRequest::new(&certificate_id, &csr.csr, certificate_contact.clone())
+        .authentication_type(AuthenticationType::Email)
+        .approver_mail(&approvers[0])
+        .web_server_type(WebServerType::Apache),
+).await?;
+
+// 4. 等待签发，然后下载
+let status = client.ssl().status(&certificate_id).await?;
+if status.is_issued {
+    let content = client.ssl().content(&certificate_id).await?;
+    std::fs::write("fullchain.pem", content.full_chain())?;
+}
+
+let details = client.ssl().get(&certificate_id).await?;     // 订阅、配置、联系人
+client.ssl().reissue(SslReissueRequest::new(&certificate_id).csr(new_csr).private_key(new_key)).await?;
+client.ssl().revoke(&certificate_id).await?;                // 无法撤销
+```
+
+**列出证书并查找 ID**
+
+```rust
+let page = client.ssl().list(SslListRequest::new().domain_name("example.com")).await?;   // 最新的在前
+
+let mut all = client.ssl().list_all(SslListRequest::new());
+while let Some(c) = all.try_next().await? {
+    println!("{} {} {} {:?}", c.certificate_id, c.domain_name, c.status, c.subscription_expires_at);
+}
+
+// 已有证书的审批人邮箱地址
+let mails = client.ssl().approvers(SslApproversRequest::for_certificate(&certificate_id)).await?;
+```
+
+**续费**（此操作会扣除你的余额）
+
+```rust
+// 从 details.subscription.expires_at 之前 30 天起允许续费。续费得到的是一张拥有自己 ID 的新证书。
+let renewal = client.ssl().renew(&certificate_id).await?;
+client.ssl().configure(
+    SslConfigureRequest::new(&renewal.certificate_id, &new_csr, certificate_contact)
+        .authentication_type(AuthenticationType::Email)
+        .approver_mail(&approvers[0]),
+).await?;
+```
+
+购买或续费的证书必须在 15 天内完成配置，否则会被取消。续费时先调用 `renew`，再用新的 ID 调用 `configure`。
+不要用 `initialize` 再买一次：那是按购买价格进行的另一笔购买，旧证书也永远不会被标记为已续费。
+为空或不是 GUID 的证书 ID（例如旧代码传入的域名）会在发送任何内容之前被拒绝。
+
+### 主机
+
+```rust
+let packages = client.hosting().packages().await?;
+let created = client.hosting().create("example.com", "starter-linux").await?;          // 扣除余额
+let status = client.hosting().status(HostingStatusRequest::by_service_id(&created.service_id)).await?;
+if status.is_active() {
+    println!("{} {}", status.panel_address, status.username);
+}
+let hosting = client.hosting().get(HostingGetRequest::by_domain("example.com")).await?;
+let plans = client.hosting().plans(None).await?;
+```
+
+### 订单与产品
+
+```rust
+let order = client.orders().get("ORDER-CODE").await?;
+
+if let Some(com) = client.products().tld("com").await? {
+    println!("{:?}, DNSSEC: {}", com.register_price(1), com.dnssec_available);
+}
+
+let mut tlds = client.products().all_tlds(ProductTldsRequest::new().currency("USD"));
+while let Some(tld) = tlds.try_next().await? {
+    println!("{}", tld.name);
+}
+
+let price = client.products().info("com", OrderType::Renew, 1).await?;
+let wildcard = client.products().ssls(ProductSslsRequest::new().is_wildcard(true)).await?;
+```
+
+## 请求与 `Request` trait
+
+每个操作都是一个以其 CLI 命令命名的请求类型：`dna domain renew` 对应 `DomainRenewRequest`，
+`dna domain renew-check` 对应 `DomainRenewCheckRequest`，`dna dns add` 对应 `DnsAddRequest`。各领域的方法会替你构建它们，
+你也可以自己创建并发送：
+
+```rust
+let request = DomainRenewRequest::new("example.com", 2);
+let endpoint = request.endpoint();
+println!("{endpoint} is {}", endpoint.safety);   // "POST /api/v1/domains/renew is billable"
+
+let result = client.send(&request).await?;
+
+// 同样的调用，附带 HTTP 详情：关联 ID、软配额状态、尝试次数、耗时
+let response = client.send_with_response(&request).await?;
+println!("{} quota {:?}", response.correlation_id, response.quota);
+```
+
+Rust 没有继承；每个请求的基础是一个 trait：
+
+| Trait | 用途 |
+|---|---|
+| `Request` | 所有操作。`type Response` 是响应类型；不返回数据的操作（锁定、解锁、添加 DNS 记录等）使用 `Empty`。 |
+| `PagedRequest<T>` | 列表操作（`Response = Page<T>`）。可访问 `Paging`（skip、limit、sort），并可配合 `Client::list_all` 使用。 |
+
+请求通过 `endpoint()` 描述自己：方法、路径、安全类别，以及是否幂等。另外三个方法有默认实现：`query()` 返回查询字符串
+（`Query` 会省略空值），`body()` 返回 JSON 请求体（`JsonBody` 可以构建请求体并省略空值，也可以使用 `serde_json::json!`），
+`validate()` 在发送前收集问题。要调用 SDK 尚未覆盖的端点，请编写你自己的请求：
+
+```rust
+use domainnameapi::{Endpoint, Query, Request, Validator};
+use serde::Deserialize;
+
+struct DomainNotesRequest {
+    domain_name: String,
+}
+
+#[derive(Deserialize)]
+struct DomainNotes {
+    notes: Vec<String>,
+}
+
+impl Request for DomainNotesRequest {
+    type Response = DomainNotes;
+
+    fn endpoint(&self) -> Endpoint {
+        Endpoint::get("/api/v1/domains/notes")          // GET 是读取
+    }
+
+    fn query(&self) -> Query {
+        Query::new().set_str("DomainName", &self.domain_name)
+    }
+
+    fn validate(&self, v: &mut Validator) {
+        v.required("domainName", &self.domain_name);
+    }
+}
+
+let notes = client.send(&DomainNotesRequest { domain_name: "example.com".into() }).await?;
+```
+
+你的请求可以获得内置请求的一切能力：凭据、按安全类别执行的重试、请求间隔控制、只读模式和
+错误处理。对于更改操作，请使用 `Endpoint::post(path, OperationSafety::Write)`（或 `Billable`、`Destructive`），
+只有当发送两次也无害时才添加 `.idempotent()`。
+
+## 错误
+
+每个失败的请求都会返回一个 `Error`，即使请求未通过检查、没有发送任何内容时也是如此。
+
+```rust
+use domainnameapi::ErrorKind;
+
+match client.domains().renew("example.com", 1).await {
+    Ok(result) => println!("{} {}", result.success, result.message),
+    Err(e) if e.kind() == ErrorKind::Validation => {
+        println!("{}: {}", e.code(), e.message());   // Dna.DomainService:Domain:10007: ...
+        for field in e.validation_errors() {
+            println!("  {field}");
+        }
+    }
+    Err(e) if e.is_outcome_unknown() => {
+        // 一个需付费或会更改数据的请求在网络上失败：它可能已经到达 API。
+        // 再次发送之前请先检查状态。
+        let info = client.domains().info("example.com").await?;
+    }
+    Err(e) => return Err(e.into()),
+}
+```
+
+| 方法 | 含义 |
+|---|---|
+| `kind()` | 稳定的分类（见下表）。请根据它分支处理，而不是根据消息。 |
+| `code()` | API 的错误代码（如 `Dna.DomainService:Domain:10007`），或下面列出的 SDK 自身的代码之一。常用代码在 `domainnameapi::codes` 中定义为常量。 |
+| `message()` | 发生了什么。模板式的消息会被替换为 API 给出的详情。 |
+| `status()` | HTTP 状态码；没有收到响应时为 `None`。 |
+| `details()`、`validation_errors()` | 附加详情和字段级问题（来自 API，或来自发送前的检查）。 |
+| `correlation_id()` | 网关的 `X-Correlation-Id`。联系支持人员时请提供它。 |
+| `hint()` | 关于下一步该怎么做的简短建议。 |
+| `is_retryable()` | 稍后重复同一请求是否可能成功。 |
+| `is_outcome_unknown()` | 请求可能已经执行：一个更改操作在网络上失败，或者 API 表示注册局可能已经执行了它。 |
+| `is_not_found()`、`is_insufficient_balance()` | 常见情况的快捷方法。 |
+| `operation()`、`safety()` | 失败的请求（`POST /api/v1/domains/renew`）及其安全类别。 |
+| `retry_after()`、`response_body()` | 网关的 `Retry-After` 和原始响应。 |
+
+`Error` 实现了 `std::error::Error` 和 `Display`（`[CODE] message (HTTP 400); field: problem`），因此可以配合
+`?`、`anyhow` 和 `thiserror` 使用。
+
+| `kind()` | 何时出现 |
+|---|---|
+| `Auth` | 凭据错误或缺失，或者该经销商在此环境中未知或已被停用（401、重定向）。 |
+| `Forbidden` | 已通过身份验证，但无权执行（403）。 |
+| `NotFound` | 域名、联系人、证书、订单或其他资源不存在（404）。 |
+| `Validation` | API 拒绝了输入，或业务规则未通过：字段错误、域名已锁定、余额不足（400、422）。 |
+| `Conflict` | 资源的状态不允许该操作（409）。 |
+| `RateLimited` | 自动重试后仍受速率限制（429）。 |
+| `Server` | 服务器端故障（5xx）。通常是暂时的。 |
+| `Network`、`Timeout` | 没有响应：DNS、TLS、代理、连接被重置，或在超时时间内没有响应。 |
+| `InvalidInput` | 请求未通过检查，或某项客户端设置无效；未发送任何内容。 |
+| `ReadOnly` | 被只读模式阻止；未发送任何内容。 |
+| `Unknown` | 其他任何情况，包括 SDK 无法读取的响应。 |
+
+`ErrorKind::as_str()` 给出 CLI 使用的名称（`auth`、`not_found`、`rate_limited` 等）。SDK 自行设置的代码：
+
+| 代码 | 含义 |
+|---|---|
+| `INVALID_RESELLER` | 网关重定向到了它的停用页面：该 Reseller ID 在**此环境中**未知、未激活或已被停用。 |
+| `INVALID_API_KEY` | 该密钥与经销商不匹配。正式环境和 OTE 的密钥不同。 |
+| `MISSING_API_KEY`、`MISSING_RESELLER_ID`、`NO_CREDENTIALS` | 某个凭据为空。 |
+| `SUBRESELLER_NOT_ALLOWED` | 子经销商账户不能使用 API。请使用主经销商的凭据。 |
+| `UNAUTHORIZED` | 其他任何 401。 |
+| `RATE_LIMITED` | 重试之后仍返回 429。 |
+| `NETWORK`、`TIMEOUT` | 没有收到响应。 |
+| `READ_ONLY` | 被只读模式阻止。 |
+| `INVALID_INPUT`、`INVALID_CONFIGURATION` | 某个请求未通过检查，或某项客户端设置无效。 |
+| `EMPTY_RESPONSE`、`INVALID_RESPONSE` | 成功的响应为空或无法读取。 |
+| `HTTP_<status>` | API 没有返回错误代码。 |
+
+## 安全、重试与速率限制
+
+每个请求都有一个安全类别，与 `dna` CLI 使用的相同：
+
+| `OperationSafety` | 含义 | 示例 |
+|---|---|---|
+| `Read` | 没有副作用，即使 API 使用 POST 或 PUT | 搜索、详情、列表、续费和转移检查、CSR 生成、证书状态 |
+| `Write` | 免费且可撤销的更改 | DNS 记录、锁定、隐私保护、名称服务器、联系人 |
+| `Billable` | 扣除你的余额 | 注册、续费、转移、恢复、购买和续费 SSL、订购主机 |
+| `Destructive` | 删除数据或难以撤销 | 删除 DNS 记录、移除 DNSSEC、吊销证书 |
+
+- **只读模式**（`read_only(true)` 或 `DNA_READ_ONLY=true`）会在发送之前阻止一切不属于 `Read` 的请求。
+  浏览探索、生成报表和搭建仪表板时可以使用。
+- **重试。** 429 响应总是会重试，并遵循 `Retry-After`。即使对需付费的请求，这样做也是安全的，因为
+  网关会在执行任何操作之前拒绝它们。网络错误、超时和 502/503/504 响应只会对读取请求，以及 CLI 标记为幂等的
+  写入请求（锁定、解锁、隐私保护、名称服务器、DNS 更新和应用）重试。注册或续费绝不会被发送两次。
+- **请求间隔控制。** 网关允许每个密钥每秒 5 个请求，域名搜索每秒 2 个。客户端会控制请求间隔，使其保持在
+  这些限制之内，并让 DNS 区域调用之间保持 1 秒间隔。域名信息和 TLD 列表不受速率限制。
+- **软配额。** 搜索和信息查询消耗 1 点，其他一切消耗 10 点。超过 200 点后，网关会让每个
+  请求最多延迟 5 秒；点数每分钟衰减 20%。`send_with_response` 会在 `quota` 中显示当前状态。
+
+## 异步代码与阻塞代码
+
+SDK 是异步的，需要一个 Tokio 运行时（`#[tokio::main]` 启动的运行时，或你的服务器所用的运行时）。这些 future
+都是 `Send`，因此可以在 `tokio::spawn`、axum 和 actix 的处理函数中使用。列表可以逐页读取（`list`），也可以作为
+元素的 `Stream` 读取（`list_all`），后者只在需要时才获取下一页：
+
+```rust
+use futures_util::TryStreamExt;
+
+let expiring: Vec<Domain> = client
+    .domains()
+    .list_all(DomainListRequest::new())
+    .try_filter(|d| std::future::ready(d.remaining_days < 30))
+    .try_collect()
+    .await?;
+```
+
+SDK 没有阻塞式 API：那会使接口规模翻倍，而收益很小。在同步代码中，请在一个运行时上执行这些调用：
+
+```rust
+let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+let account = runtime.block_on(client.account().get())?;
+```
+
+## 测试你的代码
+
+SDK 只需要一个 HTTP 端点。要在不调用 API 的情况下测试使用该 SDK 的代码，请将 `base_url` 指向一个本地
+服务器（例如用 `wiremock`、`httpmock` 或 `axum` 构建的服务器），并关闭请求间隔控制：
+
+```rust
+let client = Client::builder()
+    .credentials("test", "test")
+    .base_url(format!("http://{}", server_address))
+    .pace_requests(false)
+    .build()?;
+```
+
+模型实现了 `Default` 和 `Deserialize`，因此测试数据可以来自 JSON；可以用 `Error::new(kind, code, message)`
+为你的模拟对象构建错误。要针对真实 API 测试，请使用 OTE 及其专用的密钥。
+
+## 项目结构
+
+```
+src/
+├── lib.rs           crate 文档与重新导出
+├── client.rs        Client, ClientBuilder, Environment：发送、重试、请求间隔控制、错误解析、list_all
+├── request.rs       Request, PagedRequest, Endpoint, OperationSafety, Query, JsonBody, Validator, Page, Empty
+├── error.rs         Error, ErrorKind, codes
+├── de.rs            宽容的解码，以及声明模型和枚举的宏（内部）
+├── account.rs       AccountClient     余额、资料和交易记录
+├── contacts.rs      ContactsClient    联系人句柄
+├── domains/         DomainsClient     域名，以及 forwarding()、child_name_servers() 和 documents()
+├── dns.rs           DnsClient         区域记录
+├── dnssec.rs        DnssecClient      DS 记录
+├── ssl.rs           SslClient         证书
+├── hosting.rs       HostingClient     主机套餐与服务
+├── orders.rs        OrdersClient      订单
+└── products.rs      ProductsClient    TLD、SSL 产品和价格
+tests/               伪造 API 测试、规范覆盖测试以及 testdata/openapi.json
+examples/            可运行的程序
+```
+
+每个领域模块的结构相同：其响应所用的模型和枚举、每个操作对应一个请求类型（`XxxRequest`），以及一个 `XxxClient`。
+
+## 开发
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test                    # 单元测试、伪造 API 测试、规范测试和文档测试；都不会调用真实 API
+cargo build --examples
+```
+
+如果本地没有工具链，可以使用 Docker：
+
+```bash
+docker run --rm -v "$PWD":/src -w /src rust:1.83 sh -c 'rustup component add rustfmt clippy; cargo fmt --check; cargo clippy --all-targets -- -D warnings; cargo test'
+```
+
+测试从不调用真实 API：它们使用一个运行在 127.0.0.1 上的小型 HTTP 服务器（`tests/common`）。CI 会在
+最低支持的 Rust 版本（1.83）和最新稳定版上运行这些测试。
+
+`tests/testdata/openapi.json` 是 `dna` CLI 内嵌的 API 文档。`tests/spec.rs` 会检查其中的每个操作都有且只有一个
+请求类型，并且方法、路径、安全类别和幂等性与 CLI 一致；检查每个请求只发送文档中描述的查询参数和请求体属性
+（包括嵌套对象，且必填项都存在）；并检查响应类型使用文档中的名称。当 API 新增操作时，请更新该文档；
+在对应的请求类型创建出来之前，测试都会失败。
+
+## 从 1.x 升级
+
+2.0 是全新的 SDK。1.x 是 PHP 库的移植版本：一个阻塞式的 `DomainNameApi` 客户端，返回无类型的
+`serde_json::Value` 信封。2.0 是异步的，提供带类型的请求和模型、`Result<T, Error>` 以及 builder。
+
+| 1.x | 2.0 |
+|---|---|
+| `DomainNameApi::new(id, key, true)` | `Client::builder().credentials(id, key).environment(Environment::Ote).build()?` |
+| `dna.get_reseller_details()`, `dna.get_current_balance(..)` | `client.account().get()` / `profile()` |
+| `dna.check_availability(..)` | `client.domains().search(..)` / `bulk_search(..)` |
+| `dna.get_list(..)` | `client.domains().list(..)` / `list_all(..)` |
+| `dna.get_details(domain)` | `client.domains().info(domain)` |
+| `dna.register_with_contact_info(..)` | `client.domains().register_with_contacts(..)` |
+| `dna.renew(domain, period)` | `client.domains().renew(domain, years)` |
+| `dna.transfer(domain, epp_code, period)` | `client.domains().transfer(DomainTransferRequest::new(domain, auth_code).years(years))` |
+| `dna.check_transfer(domain, auth_code)` | `client.domains().transfer_check(domain, auth_code)` |
+| `dna.modify_name_server(..)` | `client.domains().set_name_servers(..)` |
+| `dna.enable_theft_protection_lock(domain)` | `client.domains().lock(domain)` |
+| `dna.modify_privacy_protection_status(..)` | `client.domains().set_privacy(..)` |
+| `dna.save_contacts(..)` | `client.domains().update_contacts(..)` |
+| `dna.add_child_name_server(..)` | `client.domains().child_name_servers().add(..)` |
+| `dna.get_resource_records(domain)` | `client.dns().list(domain)` |
+| `dna.add_resource_record(..)` | `client.dns().add(..)` |
+| `dna.set_resource_record_set(..)` | `client.dns().update(..)` |
+| `dna.apply_resource_records(domain)` | `client.dns().apply(domain)` |
+| `dna.set_forwarding(..)` | `client.domains().forwarding().set(..)` |
+| `dna.get_tld_list(..)` | `client.products().all_tlds(..)` |
+| `result["result"] == "ERROR"` | 带有 `e.kind()` 和 `e.code()` 的 `Err(e)` |
+
+1.x 中的转移批准/取消/拒绝调用和 `sync_from_registry` 不在 REST API 的文档中，在 2.0 中没有对应的方法。
+MSRV 仍为 1.83；`ureq` 被 `reqwest` 取代，因此 2.0 需要 Tokio 运行时。1.x 会向 Sentry 发送错误报告；
+2.0 除了 API 之外，不会向任何地方发送任何内容。
+
+## 链接
+
+- [`dna` CLI 和 MCP 服务器](https://github.com/domainreseller/cli)：在终端和 AI 智能体中使用同一套 API。
+- [API 文档](https://www.domainnameapi.com/docs/)
+- [更新日志](CHANGELOG.md)
 
 ## 许可证
 
-Apache License 2.0 — 参见 [LICENSE](LICENSE)。
+Apache License 2.0。参见 [LICENSE](LICENSE)。

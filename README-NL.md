@@ -10,1094 +10,782 @@
   <a href="README-IT.md"> | IT <img style="padding-top: 8px" src="https://raw.githubusercontent.com/yammadev/flag-icons/master/png/IT.png" alt="IT" height="20" /></a>
 </div>
 
-# rust-dna — DomainNameAPI-client voor Rust
+# DomainNameAPI Rust SDK (rust-dna)
 
-Rust-client voor de REST-API van domeinregistrar DomainNameAPI. Het is een getrouwe port van de PHP-referentiebibliotheek [php-dna](https://github.com/domainreseller/php-dna): dezelfde methoden, dezelfde verzoeken over de lijn en dezelfde retourwaarden. Elke port wordt gecontroleerd met de 134 conformiteitsfixtures van php-dna.
+<p>
+  <a href="https://github.com/domainreseller/rust-dna/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/domainreseller/rust-dna/ci.yml?branch=main&label=CI&style=flat-square" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-0B8DB5?style=flat-square" alt="Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/Rust-1.83%2B-0B8DB5?style=flat-square" alt="Rust 1.83+">
+</p>
 
-## 📦 Downloaden — gebruik altijd de Releases!
-
-⬇️ **Download de nieuwste geteste versie hier: https://github.com/domainreseller/rust-dna/releases/latest**
-
-> ⚠️ Gebruik **niet** de groene knop **Code → Download ZIP** — die downloadt de ruwe ontwikkelbranch. Releasepakketten zijn geversioneerd, getest en klaar voor productie.
-
-## Installatie- en integratiegids
-
-### Minimale vereisten
-
-- Rust 1.83 of nieuwer (editie 2021)
-- Geen async-runtime: de API is blokkerend
-- Runtime-afhankelijkheden: `ureq` (HTTP, rustls-TLS), `rustls` en `serde_json`. OpenSSL is niet nodig.
-
-### Installatie
-
-**A) Git-afhankelijkheid (vastgezet op een releasetag)**
-
-```toml
-[dependencies]
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v1.0.1" }
-```
-
-**B) Gedownloade release**
-
-Pak het releasearchief uit naast uw project en verwijs Cargo ernaar:
-
-```toml
-[dependencies]
-domainnameapi = { path = "../rust-dna" }
-```
-
-De crate exporteert `serde_json::Value` en de macro `json!` opnieuw, zodat u `serde_json` niet zelf hoeft toe te voegen (dat mag wel als u wilt).
-
-## 🔑 API-gegevens — Reseller ID en API Key
-
-De bibliotheek praat met de DomainNameAPI REST-API en heeft precies twee inloggegevens nodig, die aan de constructor worden meegegeven:
-
-| Parameter | Waarde |
-|---|---|
-| Eerste | Reseller ID — UUID zoals `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
-| Tweede | API Key |
-
-> 💡 U vindt uw **Reseller ID** en **API Key** in uw DomainNameAPI-paneel onder **API-instellingen**.
-> ⚠️ Dit zijn **API-gegevens** — uw paneel-inloggegevens werken hier **niet**.
+De officiële Rust SDK voor het resellerplatform van [Domain Name API](https://www.domainnameapi.com). Hij dekt alle
+67 operaties van de REST API met getypeerde requests en modellen: domeinen, contacten, DNS, DNSSEC, SSL-certificaten,
+hosting, bestellingen, producten en je account.
 
 ```rust
-use domainnameapi::DomainNameApi;
+let client = Client::builder().credentials(reseller_id, api_key).environment(Environment::Ote).build()?;
 
-let reseller_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
-let api_key = "your-api-key";
-
-// Live environment
-let mut dna = DomainNameApi::new(reseller_id, api_key, false);
-
-// Test (OTE) environment
-let mut dna = DomainNameApi::new(reseller_id, api_key, true);
+let search = client.domains().search("example.com").await?;
+if search.info.is_available() {
+    let request = DomainRegisterWithContactsRequest::new("example.com", DomainContacts::same(contact), ["tr.apiname.com", "eu.apiname.com"]);
+    client.domains().register_with_contacts(request).await?;
+}
 ```
 
-Van beide gegevens worden spaties aan begin en eind verwijderd. Het derde argument accepteert ook tekst, omdat panelen selectievakjes vaak als tekst opslaan: `"true"`, `"1"`, `"on"` en `"yes"` (hoofdletterongevoelig) kiezen de testomgeving, al het andere (inclusief `"false"` en `"off"`) kiest de live-omgeving.
+- **Alles getypeerd.** Elke operatie is een requesttype en elk antwoord een gedocumenteerde struct. Geen maps, geen JSON-parsing.
+- **Je eigen requests.** Elk request implementeert de trait `Request`. Implementeer hem voor een endpoint dat de SDK nog niet dekt.
+- **Veilig met geld.** Elk request geeft aan of het leest, schrijft, je saldo belast of iets verwijdert. Billable requests worden nooit herhaald en een read-only modus blokkeert elke wijziging.
+- **Ingebouwde veerkracht.** Rate limits worden automatisch gerespecteerd, 429-antwoorden worden herhaald en netwerkfouten worden herhaald bij leesacties.
+- **Duidelijke fouten.** Eén `Error`-type met een vaste soort, de foutcode van de API, validatiefouten per veld, de correlation ID en een hint.
+- **Modern Rust.** Async op Tokio, `reqwest` met rustls (geen OpenSSL), serde-modellen, lazy paginering als `Stream`, een kloonbare `Send + Sync`-client, `#![deny(missing_docs)]`.
+- **Privé.** Geen telemetrie. Niets verlaat je proces behalve de requests die je naar de API stuurt.
+
+Het is de Rust-tegenhanger van [`dna`, de Domain Name API CLI](https://github.com/domainreseller/cli): hetzelfde API-document,
+dezelfde operaties en groepen, dezelfde veiligheidsklassen, retryregels en foutcodes.
+
+## Inhoud
+
+- [Installatie](#installatie)
+- [Inloggegevens](#inloggegevens)
+- [Snel aan de slag](#snel-aan-de-slag)
+- [Configuratie](#configuratie)
+- [Gebruik](#gebruik): [account](#account) · [domeinen](#domeinen) · [contacten](#contacten) · [DNS](#dns) · [DNSSEC](#dnssec) · [SSL](#ssl) · [hosting](#hosting) · [bestellingen en producten](#bestellingen-en-producten)
+- [Requests en de trait `Request`](#requests-en-de-trait-request)
+- [Fouten](#fouten)
+- [Veiligheid, retries en rate limits](#veiligheid-retries-en-rate-limits)
+- [Async en blokkerende code](#async-en-blokkerende-code)
+- [Je code testen](#je-code-testen)
+- [Projectindeling](#projectindeling)
+- [Ontwikkeling](#ontwikkeling)
+- [Upgraden van 1.x](#upgraden-van-1x)
+
+## Installatie
+
+> [!IMPORTANT]
+> **Gebruik altijd de [nieuwste release](https://github.com/domainreseller/rust-dna/releases/latest).** Release-pakketten hebben een versienummer en zijn getest.
+> De groene knop **Code → Download ZIP** downloadt in plaats daarvan de ontwikkelbranch.
+
+```toml
+[dependencies]
+domainnameapi = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+futures-util = "0.3"   # voor het lezen van de list_all-streams
+```
+
+Zolang de crate niet op crates.io is gepubliceerd, haal je hem op via de release-tag:
+
+```toml
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.0.0" }
+```
+
+**Vereisten:** Rust 1.83 of nieuwer en een Tokio-runtime. De dependencies zijn `reqwest` (met rustls, geen OpenSSL),
+`serde`/`serde_json`, `tokio` (alleen timers), `futures-util`, `chrono`, `base64` en `httpdate`.
+
+## Inloggegevens
+
+De API authenticeert elk request met twee waarden, die de SDK voor je meestuurt:
+
+| Waarde | Header | Waar je het vindt |
+|---|---|---|
+| Reseller ID (een UUID) | `__reseller` | Resellerpaneel → **API settings** |
+| API-sleutel | `X-API-KEY` | Resellerpaneel → **API settings** |
+
+> [!NOTE]
+> Dit zijn **API-inloggegevens**: je paneelaccount werkt hier niet. **Productie en OTE (de testomgeving) gebruiken
+> verschillende API-sleutels.** Als je de ene bij de andere gebruikt, krijg je `INVALID_API_KEY` of `INVALID_RESELLER`.
 
 ## Snel aan de slag
 
 ```rust
-use domainnameapi::DomainNameApi;
+use domainnameapi::contacts::Contact;
+use domainnameapi::domains::{DomainContacts, DomainListRequest, DomainRegisterWithContactsRequest};
+use domainnameapi::{Client, Environment};
+use futures_util::TryStreamExt;
 
-fn main() {
-    let mut dna = DomainNameApi::new("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "your-api-key", false);
+#[tokio::main]
+async fn main() -> Result<(), domainnameapi::Error> {
+    // OTE is de testomgeving: echte API, eigen gegevens, geen echt geld.
+    let client = Client::builder()
+        .credentials("your-reseller-id", "your-api-key")
+        .environment(Environment::Ote)
+        .build()?;
 
-    let details = dna.get_details("example.com");
-    if details["result"] == "OK" {
-        println!("Expires: {}", details["data"]["Dates"]["Expiration"]);
-    } else {
-        eprintln!("{}: {}", details["error"]["Code"], details["error"]["Message"]);
+    // 1. Controleer de inloggegevens en het saldo.
+    let account = client.account().get().await?;
+    println!("{}: {} USD", account.reseller_name, account.usd_balance);
+
+    // 2. Is het domein beschikbaar, en tegen welke prijs?
+    let search = client.domains().search("my-new-domain.com").await?;
+    println!("{} {} {}", search.info.status, search.info.price, search.info.currency);
+
+    // 3. Registreer het met één contact voor alle vier de rollen. Dit belast het saldo.
+    let contact = Contact {
+        first_name: "Ada".into(),
+        last_name: "Lovelace".into(),
+        email: "ada@example.com".into(),
+        address: "1 Example Street".into(),
+        city: "Istanbul".into(),
+        state: "Istanbul".into(),
+        postal_code: "34000".into(),
+        country: "TR".into(),
+        phone_country_code: "90".into(),
+        phone: "5551234567".into(),
+        ..Default::default()
+    };
+    let request = DomainRegisterWithContactsRequest::new(
+        "my-new-domain.com",
+        DomainContacts::same(contact),
+        ["tr.apiname.com", "eu.apiname.com"],
+    );
+    let result = client.domains().register_with_contacts(request).await?;
+    println!("{} {}, expires {:?}", result.success, result.status, result.expiration_date);
+
+    // 4. Toon alle domeinen; pagina's worden opgehaald terwijl de stream wordt gelezen.
+    let mut domains = client.domains().list_all(DomainListRequest::new());
+    while let Some(domain) = domains.try_next().await? {
+        println!("{} expires in {} days", domain.domain_name, domain.remaining_days);
     }
+    Ok(())
 }
 ```
 
-Elk voorbeeld in [examples/](examples) draait met `cargo run --example <naam>`, bijvoorbeeld `cargo run --example get_details`.
+De map [examples](examples) bevat uitvoerbare programma's voor deze scenario's (`quickstart`, `register`, `dns`, `ssl`,
+`custom_request`, `error_handling`). Ze lezen de omgevingsvariabelen `DNA_*`, dus laat ze naar OTE wijzen:
 
-## Opbouw van de API
+```bash
+export DNA_RESELLER_ID=... DNA_API_KEY=... DNA_ENV=ote
+cargo run --example quickstart -- example.com
+```
 
-- **Eén clienttype**, `DomainNameApi`. Methoden nemen `&mut self` (de client onthoudt het laatste verzoek voor diagnose).
-- **Retourwaarden zijn `serde_json::Value`** met precies de structuur die php-dna teruggeeft — geen getypeerde modellen. Sleutelnamen, tekstvlaggen (`"true"` / `"false"`), opgemaakte bedragen (`"11.9900"`) en de enveloppen zijn identiek:
-  - succes: `{"result": "OK", "data": {...}}`
-  - fout: `{"result": "ERROR", "error": {"Code": "...", "Message": "...", "Details": "..."}}`
-  - enkele methoden gebruiken een andere envelop, overgenomen van php-dna: `get_current_balance` geeft een `OperationResult`-object terug, `check_availability` geeft bij succes een kale lijst terug, `get_reseller_details` geeft zijn velden op het hoogste niveau terug.
-- **Fouten worden teruggegeven, nooit gegooid.** Gatewayfouten, HTTP-fouten en netwerkstoringen komen allemaal terug als foutenvelop; niets veroorzaakt een panic. Registratie, overdracht en verlenging geven ook een fout terug wanneer de gateway antwoordt met HTTP 200 en `success: false`.
-- **Gestructureerde invoer** (contacten, nameserverlijsten, filters, TLD-attributen, recordinhoud) is een `&Value`, opgebouwd met `json!`. Contactmaps gebruiken de sleutels van php-dna (`FirstName`, `EMail`, `AddressLine1`, `PhoneCountryCode`, ...); zowel de platte als de geneste vorm (`Address.Line1`, `Phone.Phone.Number`) wordt geaccepteerd. Nameserverlijsten mogen een lijst of een map zijn (de waarden worden gebruikt).
-- **Geen standaardargumenten in Rust.** Elke methode neemt de volledige argumentenlijst van php-dna in dezelfde volgorde. De standaardwaarden van php-dna worden als constanten geëxporteerd: `DEFAULT_TTL` (3600), `DEFAULT_REASON` ("Owner request"), `DEFAULT_FORWARD_TYPE` ("Standard"), `DEFAULT_CURRENCY` ("USD"), `DEFAULT_TLD_COUNT` (20), `DEFAULT_COMMAND` ("create"). Voor `register_with_contact_info`, dat vier optionele argumenten heeft, bestaat ook `register_with_contact_info_opts`, dat een `RegisterOptions`-struct aanneemt waarvan `Default` de standaardwaarden van php-dna zijn.
+## Configuratie
+
+Er zijn drie manieren om een client te maken:
+
+```rust
+// Productie, standaardinstellingen
+let client = Client::new(reseller_id, api_key)?;
+
+// Alle instellingen
+let client = Client::builder()
+    .credentials(reseller_id, api_key)
+    .environment(Environment::Ote)
+    .timeout(Duration::from_secs(30))
+    .read_only(true)
+    .build()?;
+
+// Dezelfde omgevingsvariabelen die de dna CLI leest ...
+let client = Client::from_env()?;
+
+// ... plus je eigen instellingen
+let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
+```
+
+| `ClientBuilder`-methode | Standaard | Betekenis |
+|---|---|---|
+| `credentials(reseller_id, api_key)` | (verplicht) | De inloggegevens. `build()` faalt met `NO_CREDENTIALS` als een ervan leeg is. |
+| `environment(...)` | `Production` | `Production` (`https://api.domainresellerapi.com`) of `Ote` (`https://ote.domainresellerapi.com`). |
+| `base_url(...)` | geen | Overschrijft het adres van de omgeving, bijvoorbeeld voor een proxy. Een padprefix blijft behouden. |
+| `timeout(...)` | 60 s | Tijdslimiet van één poging. |
+| `max_retries(...)` | 2 | Hoe vaak een mislukt request wordt herhaald (zie [retries](#veiligheid-retries-en-rate-limits)). 0 zet retries uit. |
+| `max_retry_delay(...)` | 30 s | De langste wachttijd voor een retry. |
+| `pace_requests(...)` | `true` | Spreidt requests zodat je onder de rate limits van de gateway blijft. |
+| `read_only(...)` | `false` | Blokkeert elk request dat geen leesactie is, voordat het wordt verstuurd. |
+| `user_agent(...)` | `DomainNameAPI-Rust/<version>` | De `User-Agent`-header. |
+| `http_client(...)` | die van de SDK zelf | Je eigen `reqwest::Client` (proxy, TLS-instellingen). |
+
+`from_env()` leest:
+
+| Variabele | Betekenis |
+|---|---|
+| `DNA_RESELLER_ID`, `DNA_API_KEY` | De inloggegevens. |
+| `DNA_ENV` | `production` of `ote` (ook `prod`, `live`, `test`, `sandbox`). |
+| `DNA_TEST_MODE` | `true`, `1`, `on` of `yes` kiest OTE. Wordt gebruikt als `DNA_ENV` niet is ingesteld. |
+| `DNA_BASE_URL` | Optionele overschrijving van het basisadres. |
+| `DNA_READ_ONLY` | `true` zet de read-only modus aan. |
+
+`Client` is `Clone + Send + Sync` en goedkoop om te klonen (hij bevat een `Arc`). Maak één client per set inloggegevens en
+deel die gedurende de hele levensduur van de applicatie: de pacing voor de rate limits geldt per client.
 
 ## Gebruik
 
-Alle fragmenten gaan uit van `use domainnameapi::{json, DomainNameApi};` en een client `let mut dna = DomainNameApi::new(...)`.
+Elk gebied van de API heeft een eigen client, genoemd naar de commandogroepen van de CLI: `client.account()`,
+`client.contacts()`, `client.domains()` (met `forwarding()`, `child_name_servers()` en `documents()`),
+`client.dns()`, `client.dnssec()`, `client.ssl()`, `client.hosting()`, `client.orders()` en `client.products()`.
+Verplichte invoer zijn argumenten; operaties met optionele invoer nemen een request dat je bouwt met `new(...)` en
+geketende setters. Methoden die je saldo belasten, vermelden dat in hun documentatie.
 
-#### Domeinregistratie
-
-Let op: voor .tr-domeinen zijn extra parameters nodig. Het argument met extra attributen wordt gebruikt voor domeinnamen die aanvullende informatie vereisen, zoals .tr.
+### Account
 
 ```rust
-let contact = json!({
-    "FirstName": "John",
-    "LastName": "Doe",
-    "Company": "Example Corp",
-    "EMail": "john.doe@example.com",
-    "AddressLine1": "123 Lorem Street",
-    "AddressLine2": "Suite 456",
-    "AddressLine3": "",
-    "City": "Springfield",
-    "Country": "US",
-    "Fax": "1234567890",
-    "FaxCountryCode": "1",
-    "Phone": "9876543210",
-    "PhoneCountryCode": 1,
-    "Type": "Contact",
-    "ZipCode": "12345",
-    "State": "IL"
-});
-let contacts = json!({
-    "Administrative": contact,
-    "Billing": contact,
-    "Technical": contact,
-    "Registrant": contact
-});
+let account = client.account().get().await?;          // reseller_id, reseller_name, try_balance, usd_balance
+let profile = client.account().profile().await?;      // name, company_name, account_currency, status, ...
 
-let result = dna.register_with_contact_info(
-    "example.com",
-    1,
-    &contacts,
-    &json!(["ns1.example.com", "ns2.example.com"]),
-    true,  // registrar (theft protection) lock
-    false, // privacy protection
-    &json!({}),
-);
-
-// Same, with php-dna's defaults for the optional arguments
-// (default nameservers, lock on, privacy off, no attributes):
-use domainnameapi::RegisterOptions;
-let result = dna.register_with_contact_info_opts("example.com", 1, &contacts, &RegisterOptions::default());
+// De afschrijvingen van deze maand, over alle pagina's
+let request = AccountTransactionsRequest::new()
+    .charge_type(ChargeType::Subtract)
+    .start_date("2026-11-01T00:00:00Z".parse()?)
+    .transaction_types([TransactionType::Register, TransactionType::Renew]);
+let mut transactions = client.account().all_transactions(request);
+while let Some(t) = transactions.try_next().await? {
+    println!("{:?} {} {} {}", t.creation_time, t.transaction_type, t.amount, t.amount_currency);
+}
 ```
 
-Geef voor een `.tr`-domein de TRABIS-attributen mee. De bibliotheek stuurt alleen wat de gateway accepteert (`TRABISDOMAINCATEGORY`, `TRABISCITIZENID`, `TRABISTAXOFFICE`, `TRABISTAXNUMBER`), zet `1`/`0` om naar `Owner`/`Corporate` en corrigeert de oude spelling `TRABISCITIZIENID`:
+### Domeinen
+
+**Zoeken**
 
 ```rust
-let result = dna.register_with_contact_info_opts(
+let one = client.domains().search("example.com").await?;
+let available = one.success && one.info.is_available();
+
+let many = client.domains().bulk_search(["example.com", "example.net", "example.com.tr"]).await?;
+for domain in many.available() {
+    println!("{}: {} {}", domain.domain_name, domain.price, domain.currency);
+}
+
+// Met een valuta
+client.domains().search_with(DomainSearchRequest::new("example.com").currency("USD")).await?;
+```
+
+**Lijst en details**
+
+```rust
+let page = client.domains().list(DomainListRequest::new().limit(50).statuses([DomainStatus::Active])).await?;
+
+let all: Vec<Domain> = client.domains().list_all(DomainListRequest::new().domain_name("example")).try_collect().await?;
+
+let info = client.domains().info("example.com").await?;
+println!("{} {:?}", info.auth_code, info.expiration_date);
+if let Some(registrant) = info.contact(ContactType::Registrant) {
+    println!("{}", registrant.email);
+}
+```
+
+**Registreren, verlengen, verhuizen, herstellen** (deze belasten je saldo)
+
+```rust
+// Eén contact voor alle vier de rollen, twee jaar
+let request = DomainRegisterWithContactsRequest::new("example.com", DomainContacts::same(contact.clone()), ["tr.apiname.com", "eu.apiname.com"])
+    .years(2);
+client.domains().register_with_contacts(request).await?;
+
+// Verschillende contacten per rol, registry-attributen, de trusteedienst
+let request = DomainRegisterWithContactsRequest::new(
     "example.com.tr",
-    1,
-    &contacts,
-    &RegisterOptions {
-        name_servers: json!(["ns1.example.com", "ns2.example.com"]),
-        additional_attributes: json!({
-            "TRABISDOMAINCATEGORY": 1,
-            "TRABISCITIZIENID": "12345678901",
-            "TRABISNAMESURNAME": "John Doe",
-            "TRABISCOUNTRYID": "840",
-            "TRABISCITYID": "17"
-        }),
-        ..RegisterOptions::default()
-    },
-);
-```
+    DomainContacts { registrant: Some(owner), admin: Some(staff.clone()), tech: Some(staff.clone()), billing: Some(staff) },
+    ["tr.apiname.com", "eu.apiname.com"],
+)
+.tld_attribute("<key>", "<value>"); // de sleutels: client.products().tld("com.tr").await?.unwrap().attributes
 
-<details>
-<summary>Voorbeelduitvoer voor domeinregistratie</summary>
+// Met bestaande contacthandles
+let request = DomainRegisterRequest::new("example.com", ContactHandles::same("DNA-12345"), ["tr.apiname.com", "eu.apiname.com"]);
+client.domains().register(request).await?;
 
-```json
-{
-  "data": {
-    "ID": 123456,
-    "Status": "Active",
-    "DomainName": "example.com",
-    "AuthCode": "Xy9#mK2$pL5@vN8",
-    "LockStatus": "true",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "false",
-    "Contacts": {
-      "Billing": {"ID": 987654},
-      "Technical": {"ID": 987654},
-      "Administrative": {"ID": 987654},
-      "Registrant": {"ID": 987654}
-    },
-    "Dates": {
-      "Start": "2024-03-15T10:00:00",
-      "Expiration": "2025-03-15T10:00:00",
-      "RemainingDays": 365
-    },
-    "NameServers": ["ns1.example.com", "ns2.example.com"],
-    "Additional": [],
-    "ChildNameServers": []
-  },
-  "result": "OK"
+let renewal = client.domains().renew_check("example.com", Some(1)).await?;   // gratis
+if renewal.renewable {
+    client.domains().renew("example.com", 1).await?;
 }
+
+let check = client.domains().transfer_check("example.com", "EPP-CODE").await?;  // gratis
+if check.transferable {
+    client.domains().transfer(DomainTransferRequest::new("example.com", "EPP-CODE")).await?;
+}
+
+client.domains().restore("example.com").await?;
 ```
 
-</details>
+Requests worden gecontroleerd voordat ze worden verstuurd. Een registratie zonder alle vier de contactrollen, een contact
+zonder e-mailadres of een periode van 0 jaar geeft een `ErrorKind::InvalidInput`-fout terug met een lijst van alle
+problemen, en er bereikt niets de API.
 
-<hr style="border: 4px solid #000; border-style: dashed;">
+> [!NOTE]
+> De API kan een registratie, verlenging of verhuizing beantwoorden met HTTP 200 en `"success": false` (bijvoorbeeld als de
+> registry het domein weigert). De SDK geeft dat antwoord ongewijzigd terug, net als de Java SDK: controleer
+> `DomainOperationResult::success` en `message`. Hetzelfde geldt voor `SslOperationResult` en `ContactCreateResult`.
 
-#### Domeinverlenging
+**Instellingen**
 
 ```rust
-let result = dna.renew("example.com", 1);
+client.domains().lock("example.com").await?;
+client.domains().unlock("example.com").await?;
+client.domains().set_privacy("example.com", true).await?;
+client.domains()
+    .set_name_servers(DomainNameServersSetRequest::new("example.com", ["ns1.example.net", "ns2.example.net"]))
+    .await?;
+client.domains()   // een met DNSSEC ondertekend domein
+    .set_name_servers(DomainNameServersSetRequest::new("example.com", ["ns1.example.net"]).dnssec_mode(DnssecMode::DisableDnssec))
+    .await?;
+let auth_code = client.domains().update_auth_code("example.com").await?;
+
+client.domains().update_contacts("example.com", DomainContacts::same(contact)).await?;
+client.domains().set_contact_handles("example.com", ContactHandles { tech: "DNA-12345".into(), ..Default::default() }).await?;
 ```
 
-<details>
-<summary>Voorbeelduitvoer voor domeinverlenging</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "ExpirationDate": "2025-03-15T10:00:00"
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Domeinoverdracht
-
-Overdrachten sturen nooit contactgegevens mee: de registrar neemt de contacten over van de vorige registrar, dus elk overdrachtsverzoek bevat `contacts: []`.
+**URL-doorsturing, child nameservers en documenten**
 
 ```rust
-let result = dna.transfer("example.com", "Xy9#mK2$", 3);
+client.domains().forwarding().set("example.com", "https://www.example.net", ForwardType::Standard).await?;
+let forwarding = client.domains().forwarding().get("example.com").await?;   // None als er niets is ingesteld
+client.domains().forwarding().delete("example.com").await?;
+
+// De IP-versie van elk adres wordt herkend
+client.domains().child_name_servers().add("example.com", "ns1.example.com", ["192.0.2.10", "2001:db8::10"]).await?;
+client.domains().child_name_servers()
+    .update(DomainHostUpdateRequest::new("example.com", "ns1.example.com", ["192.0.2.20"]))
+    .await?;
+client.domains().child_name_servers().delete("example.com", "ns1.example.com").await?;
+
+// Registrydocumenten (meestal .tr)
+let document = DocumentUpload::from_file(DocumentType::IdentityCard, "id.pdf")?;
+client.domains().documents().upload("example.com.tr", [document]).await?;
+let documents: Vec<Document> = client.domains().documents().list_all("example.com.tr").try_collect().await?;
 ```
 
-<details>
-<summary>Voorbeelduitvoer voor domeinoverdracht</summary>
+### Contacten
 
-```json
-{
-  "data": {
-    "ID": 0,
-    "Status": "Active",
-    "DomainName": "",
-    "AuthCode": "",
-    "LockStatus": "false",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "false",
-    "Contacts": {
-      "Billing": {"ID": 0},
-      "Technical": {"ID": 0},
-      "Administrative": {"ID": 0},
-      "Registrant": {"ID": 0}
-    },
-    "Dates": {"Start": "", "Expiration": "2027-11-09T12:00:00", "RemainingDays": 365},
-    "NameServers": [],
-    "Additional": [],
-    "ChildNameServers": []
-  },
-  "result": "OK"
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Overdrachtsbeheer
+Contacthandles zijn herbruikbare contacten. Maak er één keer een aan en gebruik hem voor veel domeinen.
 
 ```rust
-// Can the domain be transferred with this auth code?
-let check = dna.check_transfer("example.com", "Xy9#mK2$");
+let created = client.contacts().create(contact.clone()).await?;
+let handle = created.handle;                                         // bijvoorbeeld DNA-12345
 
-// Cancel an incoming transfer, approve or reject an outgoing one
-let result = dna.cancel_transfer("example.com");
-let result = dna.approve_transfer("example.com");
-let result = dna.reject_transfer("example.com");
+let details = client.contacts().get(&handle).await?;                 // het contact en zijn verificatiestatus
+let result = client.contacts().update(&handle, contact).await?;
+println!("{} of {} domains updated", result.stats.success_count, result.stats.total_domain_count);
+
+let verifications = client.contacts().verification(&handle).await?;
+client.contacts().resend_verification(&handle).await?;
 ```
 
-<details>
-<summary>Voorbeelduitvoer voor overdrachtsbeheer</summary>
+### DNS
 
-```json
-{
-  "result": "OK",
-  "data": {
-    "TransferAvailabilityStatus": true,
-    "AuthCodeIsRequired": true,
-    "AuthCodeIsValid": true,
-    "UserTransferRequired": false,
-    "TransferLock": false,
-    "Message": "Domain can be transferred",
-    "MessageKey": "TransferAvailable",
-    "Additional": []
-  }
-}
-```
-
-`check_transfer` geeft `"result": "ERROR"` met een `error` (`TRANSFER_NOT_AVAILABLE`) terug wanneer het register meldt dat het domein niet overdraagbaar is; `data` is in beide gevallen gevuld. `cancel_transfer`, `approve_transfer` en `reject_transfer` geven terug:
-
-```json
-{"result": "OK", "data": {"DomainName": "example.com", "Status": "Cancelled"}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Domeinlijst
+Zonerecords van domeinen op de nameservers van het platform. Records zijn publiek vindbaar zodra het domein die nameservers gebruikt,
+waar `apply` voor zorgt.
 
 ```rust
-let result = dna.get_list(&json!({
-    "OrderColumn": "Id",
-    "OrderDirection": "ASC",
-    "PageNumber": 0,
-    "PageSize": 1000
-}));
-
-// No filters:
-let result = dna.get_list(&json!({}));
-```
-
-`PageNumber` begint bij 0. De eigen gatewayparameters `MaxResultCount`, `SkipCount` en `Sorting`, en filters zoals `DomainName`, kunnen ook worden meegegeven.
-
-<details>
-<summary>Voorbeelduitvoer voor domeinlijst</summary>
-
-```json
-{
-  "data": {
-    "Domains": [
-      {
-        "ID": 564346,
-        "Status": "Active",
-        "DomainName": "example.com",
-        "AuthCode": "",
-        "LockStatus": "true",
-        "PrivacyProtectionStatus": "false",
-        "IsChildNameServer": "false",
-        "Contacts": {
-          "Billing": {"ID": ""},
-          "Technical": {"ID": ""},
-          "Administrative": {"ID": ""},
-          "Registrant": {"ID": ""}
-        },
-        "Dates": {
-          "Start": "2024-03-15T10:00:00",
-          "Expiration": "2025-03-15T10:00:00",
-          "RemainingDays": 365
-        },
-        "NameServers": ["ns1.example.com", "ns2.example.com"],
-        "Additional": [],
-        "ChildNameServers": []
-      }
-    ]
-  },
-  "result": "OK",
-  "TotalCount": 1
+for set in client.dns().list("example.com").await? {
+    println!("{} {} {} {:?}", set.name, set.record_type, set.ttl, set.values());
 }
+
+let dns = client.dns();
+dns.add(DnsAddRequest::new("example.com", "www", RecordType::A, ["192.0.2.10"])).await?;
+dns.add(DnsAddRequest::new("example.com", "@", "txt", ["v=spf1 include:_spf.example.net ~all"])).await?;   // "txt" wordt TXT
+dns.add(DnsAddRequest::new("example.com", "@", RecordType::Mx, ["10 mx1.example.net", "20 mx2.example.net"]).ttl(3600)).await?;
+dns.update(DnsUpdateRequest::new("example.com", "www", RecordType::A, ["192.0.2.20"]).ttl(300)).await?;
+dns.delete(DnsDeleteRequest::new("example.com", "www", RecordType::A, "192.0.2.20")).await?;
+
+let applied = dns.apply("example.com").await?;
 ```
 
-</details>
+De SDK controleert wat de API zou weigeren: een CNAME op de apex, een MX zonder prioriteit, een CAA-waarde zonder de drie
+onderdelen, een A-record dat geen IPv4-adres is, een TTL buiten 1–86400. Zoneaanroepen worden 1 seconde uit elkaar
+gehouden, de limiet van de gateway. De OTE-testomgeving beantwoordt zoneaanroepen met HTTP 500, dus DNS-code kan alleen
+in productie worden uitgeprobeerd.
 
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### TLD-lijst
+### DNSSEC
 
 ```rust
-let result = dna.get_tld_list(100);
+let info = client.dnssec().get("example.com").await?;      // status, ds_records, allowed_algorithms, ...
+
+let record: DsData = "12345 13 2 49FD46E6C4B45C55D4AC69CBD3CD34AC1AFE51DE".parse()?;
+client.dnssec().add("example.com", [record.clone()]).await?;
+client.dnssec().remove("example.com", record).await?;
+client.dnssec().disable("example.com").await?;            // verwijdert alle DS-records
 ```
 
-<details>
-<summary>Voorbeelduitvoer voor TLD-lijst</summary>
+### SSL
 
-```json
-{
-  "data": [
-    {
-      "id": 1,
-      "status": "Active",
-      "maxchar": 63,
-      "maxperiod": 10,
-      "minchar": 1,
-      "minperiod": 1,
-      "tld": "com",
-      "pricing": {
-        "registration": {"1": "10.8100"},
-        "renew": {"1": "11.0100"},
-        "transfer": {"1": "10.6100"},
-        "restore": {"1": "99.9000"}
-      },
-      "currencies": {
-        "registration": "USD",
-        "renew": "USD",
-        "transfer": "USD",
-        "restore": "USD"
-      }
+Een domein kan meerdere certificaten hebben. Een bestaand certificaat wordt daarom aangeduid met zijn **certificaat-ID**
+(een GUID), nooit met de domeinnaam. `initialize` en `renew` geven het ID terug: bewaar het. `list` vindt de ID's van de
+certificaten die je al hebt.
+
+```rust
+// 1. Kopen (belast het saldo). Pakketcodes komen uit client.products().ssls(...).
+let approvers = client.ssl().approvers(SslApproversRequest::for_purchase("example.com", "PKG-CODE")).await?;
+let order = client.ssl().initialize("example.com", "PKG-CODE").await?;
+let certificate_id = order.certificate_id;                  // bewaar het: elke latere aanroep heeft het nodig
+
+// 2. Een CSR en private key, als je die nog niet hebt
+let csr = client.ssl().generate_csr(
+    SslGenerateCsrRequest::new("example.com")
+        .country("TR").state("Istanbul").locality("Istanbul").organization("Example Ltd").organization_unit("IT"),
+).await?;
+
+// 3. Binnen 15 dagen configureren: CSR, validatiemethode en contact
+client.ssl().configure(
+    SslConfigureRequest::new(&certificate_id, &csr.csr, certificate_contact.clone())
+        .authentication_type(AuthenticationType::Email)
+        .approver_mail(&approvers[0])
+        .web_server_type(WebServerType::Apache),
+).await?;
+
+// 4. Wachten op uitgifte, dan downloaden
+let status = client.ssl().status(&certificate_id).await?;
+if status.is_issued {
+    let content = client.ssl().content(&certificate_id).await?;
+    std::fs::write("fullchain.pem", content.full_chain())?;
+}
+
+let details = client.ssl().get(&certificate_id).await?;     // abonnement, configuratie, contacten
+client.ssl().reissue(SslReissueRequest::new(&certificate_id).csr(new_csr).private_key(new_key)).await?;
+client.ssl().revoke(&certificate_id).await?;                // kan niet ongedaan worden gemaakt
+```
+
+**Certificaten weergeven en een ID vinden**
+
+```rust
+let page = client.ssl().list(SslListRequest::new().domain_name("example.com")).await?;   // nieuwste eerst
+
+let mut all = client.ssl().list_all(SslListRequest::new());
+while let Some(c) = all.try_next().await? {
+    println!("{} {} {} {:?}", c.certificate_id, c.domain_name, c.status, c.subscription_expires_at);
+}
+
+// De goedkeuringsadressen van een certificaat dat je al hebt
+let mails = client.ssl().approvers(SslApproversRequest::for_certificate(&certificate_id)).await?;
+```
+
+**Verlengen** (dit belast je saldo)
+
+```rust
+// Toegestaan vanaf 30 dagen vóór details.subscription.expires_at. De verlenging is een nieuw certificaat met een eigen ID.
+let renewal = client.ssl().renew(&certificate_id).await?;
+client.ssl().configure(
+    SslConfigureRequest::new(&renewal.certificate_id, &new_csr, certificate_contact)
+        .authentication_type(AuthenticationType::Email)
+        .approver_mail(&approvers[0]),
+).await?;
+```
+
+Een gekocht of verlengd certificaat moet binnen 15 dagen worden geconfigureerd; daarna wordt het geannuleerd. Om te
+verlengen roep je `renew` aan en daarna `configure` met het nieuwe ID. Koop niet opnieuw met `initialize`: dat is een
+losse aankoop tegen de aankoopprijs, en het oude certificaat wordt nooit als verlengd gemarkeerd. Een certificaat-ID dat
+leeg is of geen GUID is (bijvoorbeeld een domeinnaam die oudere code doorgeeft), wordt geweigerd voordat er iets wordt verstuurd.
+
+### Hosting
+
+```rust
+let packages = client.hosting().packages().await?;
+let created = client.hosting().create("example.com", "starter-linux").await?;          // belast het saldo
+let status = client.hosting().status(HostingStatusRequest::by_service_id(&created.service_id)).await?;
+if status.is_active() {
+    println!("{} {}", status.panel_address, status.username);
+}
+let hosting = client.hosting().get(HostingGetRequest::by_domain("example.com")).await?;
+let plans = client.hosting().plans(None).await?;
+```
+
+### Bestellingen en producten
+
+```rust
+let order = client.orders().get("ORDER-CODE").await?;
+
+if let Some(com) = client.products().tld("com").await? {
+    println!("{:?}, DNSSEC: {}", com.register_price(1), com.dnssec_available);
+}
+
+let mut tlds = client.products().all_tlds(ProductTldsRequest::new().currency("USD"));
+while let Some(tld) = tlds.try_next().await? {
+    println!("{}", tld.name);
+}
+
+let price = client.products().info("com", OrderType::Renew, 1).await?;
+let wildcard = client.products().ssls(ProductSslsRequest::new().is_wildcard(true)).await?;
+```
+
+## Requests en de trait `Request`
+
+Elke operatie is een requesttype, genoemd naar het bijbehorende CLI-commando: `dna domain renew` is `DomainRenewRequest`,
+`dna domain renew-check` is `DomainRenewCheckRequest`, `dna dns add` is `DnsAddRequest`. De gebiedsmethoden bouwen ze voor
+je, en je kunt ze ook zelf maken en versturen:
+
+```rust
+let request = DomainRenewRequest::new("example.com", 2);
+let endpoint = request.endpoint();
+println!("{endpoint} is {}", endpoint.safety);   // "POST /api/v1/domains/renew is billable"
+
+let result = client.send(&request).await?;
+
+// Hetzelfde, met de HTTP-details: correlation ID, soft-quotastatus, pogingen, duur
+let response = client.send_with_response(&request).await?;
+println!("{} quota {:?}", response.correlation_id, response.quota);
+```
+
+Rust kent geen overerving; de basis van elk request is een trait:
+
+| Trait | Voor |
+|---|---|
+| `Request` | Elke operatie. `type Response` is het antwoordtype; `Empty` voor operaties die niets teruggeven (vergrendelen, ontgrendelen, een DNS-record toevoegen, ...). |
+| `PagedRequest<T>` | Lijstoperaties (`Response = Page<T>`). Geeft toegang tot de `Paging` (skip, limit, sort) en werkt met `Client::list_all`. |
+
+Een request geeft met `endpoint()` aan wat het is: methode, pad, veiligheidsklasse en of het idempotent is. De andere drie
+methoden hebben een standaardimplementatie: `query()` geeft de querystring terug (`Query` laat lege waarden weg), `body()`
+de JSON-body (`JsonBody` bouwt er een en laat lege waarden weg, of gebruik `serde_json::json!`), en `validate()` verzamelt
+problemen vóór het versturen. Om een endpoint aan te roepen dat de SDK nog niet dekt, schrijf je er zelf een:
+
+```rust
+use domainnameapi::{Endpoint, Query, Request, Validator};
+use serde::Deserialize;
+
+struct DomainNotesRequest {
+    domain_name: String,
+}
+
+#[derive(Deserialize)]
+struct DomainNotes {
+    notes: Vec<String>,
+}
+
+impl Request for DomainNotesRequest {
+    type Response = DomainNotes;
+
+    fn endpoint(&self) -> Endpoint {
+        Endpoint::get("/api/v1/domains/notes")          // GET is een leesactie
     }
-  ],
-  "result": "OK"
-}
-```
 
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Beschikbaarheidscontrole van domeinen
-
-```rust
-let result = dna.check_availability(["hello", "world123x0"], ["com", "net"], 1, "create");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor beschikbaarheidscontrole</summary>
-
-Bij succes is het resultaat een kale lijst (zonder `result`-sleutel); bij een fout is het de foutenvelop.
-
-```json
-[
-  {
-    "TLD": "com",
-    "DomainName": "hello",
-    "Status": "notavailable",
-    "Command": "create",
-    "Period": 1,
-    "IsFee": false,
-    "Price": "10.8100",
-    "Currency": "USD",
-    "Reason": "Domain exists"
-  },
-  {
-    "TLD": "com",
-    "DomainName": "world123x0",
-    "Status": "available",
-    "Command": "create",
-    "Period": 1,
-    "IsFee": false,
-    "Price": "10.8100",
-    "Currency": "USD",
-    "Reason": null
-  }
-]
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Domeindetails
-
-```rust
-let result = dna.get_details("example.com");
-
-// Re-read the domain from the registry (same result shape):
-let result = dna.sync_from_registry("example.com");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor domeindetails</summary>
-
-```json
-{
-  "data": {
-    "ID": 564346,
-    "Status": "Active",
-    "DomainName": "example.com",
-    "AuthCode": "DHQ!K52",
-    "LockStatus": "true",
-    "PrivacyProtectionStatus": "false",
-    "IsChildNameServer": "true",
-    "Contacts": {
-      "Billing": {"ID": "DNA-B-4"},
-      "Technical": {"ID": "DNA-T-3"},
-      "Administrative": {"ID": "DNA-A-2"},
-      "Registrant": {"ID": "DNA-R-1"}
-    },
-    "Dates": {
-      "Start": "2025-05-26T16:08:37",
-      "Expiration": "2027-05-26T16:08:37",
-      "RemainingDays": 449
-    },
-    "NameServers": ["ns1.example.com", "ns2.example.com"],
-    "Additional": {"TRABISDOMAINCATEGORY": "1"},
-    "ChildNameServers": [
-      {"ns": "ns1.example.com", "ip": "1.2.3.4"}
-    ]
-  },
-  "result": "OK"
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Nameservers wijzigen
-
-```rust
-let result = dna.modify_name_server("example.com", &json!(["ns1.example.com", "ns2.example.com"]));
-```
-
-<details>
-<summary>Voorbeelduitvoer voor nameservers wijzigen</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServers": ["ns1.example.com", "ns2.example.com"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Domeinvergrendeling inschakelen
-
-```rust
-let result = dna.enable_theft_protection_lock("example.com");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor vergrendeling inschakelen</summary>
-
-```json
-{"result": "OK", "data": {"LockStatus": true}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Domeinvergrendeling uitschakelen
-
-```rust
-let result = dna.disable_theft_protection_lock("example.com");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor vergrendeling uitschakelen</summary>
-
-```json
-{"result": "OK", "data": {"LockStatus": false}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Child-nameserver toevoegen
-
-```rust
-let result = dna.add_child_name_server("example.com", "ns1.example.com", "1.2.3.4");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor child-nameserver toevoegen</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServer": "ns1.example.com",
-    "IPAdresses": ["1.2.3.4"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Child-nameserver verwijderen
-
-```rust
-let result = dna.delete_child_name_server("example.com", "ns1.example.com");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor child-nameserver verwijderen</summary>
-
-```json
-{"result": "OK", "data": {"NameServer": "ns1.example.com"}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Child-nameserver bijwerken
-
-```rust
-let result = dna.modify_child_name_server("example.com", "ns1.example.com", "1.2.3.4");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor child-nameserver bijwerken</summary>
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "NameServer": "ns1.example.com",
-    "IPAdresses": ["1.2.3.4"]
-  }
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Domeinprivacy wijzigen
-
-`status` is een `bool` of een waarde zoals panelen die opslaan: `"1"`, `"on"`, `"true"`, `"yes"` en `1` betekenen aan, al het andere uit. Het argument voor de reden (reason) blijft alleen bestaan voor compatibiliteit en wordt niet verstuurd, omdat de gateway zo'n veld niet kent.
-
-```rust
-let result = dna.modify_privacy_protection_status("example.com", true, "Owner request");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor domeinprivacy wijzigen</summary>
-
-```json
-{"data": {"PrivacyProtectionStatus": true}, "result": "OK"}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Domeincontacten ophalen
-
-```rust
-let result = dna.get_contacts("example.com");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor domeincontacten ophalen</summary>
-
-```json
-{
-  "data": {
-    "contacts": {
-      "Administrative": {
-        "ID": "DNA-A-2",
-        "Status": "Active",
-        "AuthCode": "",
-        "FirstName": "John",
-        "LastName": "Doe",
-        "Company": "Example Corp",
-        "EMail": "john@example.com",
-        "Type": "Administrative",
-        "Address": {
-          "Line1": "123 Main Street",
-          "Line2": "",
-          "Line3": "",
-          "State": "IL",
-          "City": "Springfield",
-          "Country": "US",
-          "ZipCode": "62701"
-        },
-        "Phone": {
-          "Phone": {"Number": "5551234567", "CountryCode": "1"},
-          "Fax": {"Number": "", "CountryCode": ""}
-        },
-        "Additional": []
-      },
-      "Billing": {"...": "same shape"},
-      "Registrant": {"...": "same shape"},
-      "Technical": {"...": "same shape"}
+    fn query(&self) -> Query {
+        Query::new().set_str("DomainName", &self.domain_name)
     }
-  },
-  "result": "OK"
-}
-```
 
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Domeincontacten opslaan
-
-```rust
-let contact = json!({
-    "FirstName": "John",
-    "LastName": "Doe",
-    "Company": "Example Corp",
-    "EMail": "john@example.com",
-    "AddressLine1": "123 Main Street",
-    "AddressLine2": "",
-    "AddressLine3": "",
-    "City": "Springfield",
-    "Country": "US",
-    "Fax": "5559876543",
-    "FaxCountryCode": "1",
-    "Phone": "5551234567",
-    "PhoneCountryCode": 1,
-    "Type": "Contact",
-    "ZipCode": "62701",
-    "State": "IL"
-});
-
-let result = dna.save_contacts("example.com", &json!({
-    "Administrative": contact,
-    "Billing": contact,
-    "Technical": contact,
-    "Registrant": contact
-}));
-```
-
-<details>
-<summary>Voorbeelduitvoer voor domeincontacten opslaan</summary>
-
-```json
-{"result": "OK", "data": {"contacts": []}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### DNS-zonerecords
-
-De gateway slaat records op als **sets** (één naam + type met één of meer waarden). Een set schrijven vervangt al zijn waarden, en het verwijderen van een willekeurige waarde verwijdert de hele set. De `*_value`-methoden doen het lezen-samenvoegen-schrijven voor u, zodat een paneel records één voor één kan behandelen. Namen mogen relatief zijn (`www`), `@` / leeg voor de apex, of volledig gekwalificeerd; ze worden teruggebracht tot het relatieve label dat de gateway verwacht. Ondersteunde types: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT. Wijzigingen worden direct toegepast wanneer `apply` `true` is (standaard van php-dna); roep anders `apply_resource_records` aan. Zone-aanroepen liggen minstens één seconde uit elkaar, omdat de gateway pieken in verzoeken beperkt. Als het automatisch toepassen mislukt, geeft de methode de fout van het toepassen terug (de wijziging blijft klaargezet). Resultaten melden het type in hoofdletters en de TTL die echt is verstuurd (onder 1 wordt 3600, boven 86400 wordt 86400).
-
-```rust
-// List every record (one row per value; names come back as FQDNs)
-let records = dna.get_resource_records("example.com");
-
-// Make a set hold exactly these values (an empty list removes the set)
-dna.set_resource_record_set("example.com", "@", "MX", ["10 mx1.example.com", "20 mx2.example.com"], 3600, true);
-
-// Add, remove or replace one value, keeping the others (ttl None keeps the set's TTL)
-dna.add_resource_record_value("example.com", "@", "MX", "30 mx3.example.com", None, true);
-dna.remove_resource_record_value("example.com", "@", "MX", "30 mx3.example.com", true);
-dna.replace_resource_record_value("example.com", "@", "A", "192.0.2.1", "192.0.2.2", None, true);
-
-// Remove a whole set (pass a current value to save a lookup, or "")
-dna.delete_resource_record_set("example.com", "www", "CNAME", true, "");
-
-// Low-level calls, mirroring the gateway endpoints
-dna.add_resource_record("example.com", "www", "A", &json!("192.0.2.5"), 3600, true);
-dna.edit_resource_record("example.com", "www", "www", "A", &json!("192.0.2.6"), 600, true);
-dna.delete_resource_record("example.com", "www", "192.0.2.5", "A", true);
-dna.apply_resource_records("example.com");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor DNS-zonerecords</summary>
-
-`get_resource_records`:
-
-```json
-{
-  "result": "OK",
-  "data": {
-    "records": [
-      {"Name": "example.com.", "Type": "A", "TTL": 3600, "Content": "192.0.2.1", "Disabled": false},
-      {"Name": "www.example.com.", "Type": "CNAME", "TTL": 300, "Content": "example.com.", "Disabled": false},
-      {"Name": "example.com.", "Type": "MX", "TTL": 3600, "Content": "10 mx1.example.com.", "Disabled": false}
-    ]
-  }
-}
-```
-
-`set_resource_record_set` / `add_resource_record_value`:
-
-```json
-{"result": "OK", "data": {"Name": "", "Type": "MX", "TTL": 3600, "Contents": ["10 mx1.example.com.", "20 mx2.example.com.", "30 mx3.example.com"]}}
-```
-
-Een waarde die al aanwezig is (of bij verwijderen ontbreekt) verandert niets:
-
-```json
-{"result": "OK", "data": {"Name": "", "Type": "MX", "Contents": ["10 mx1.example.com."], "Changed": false}}
-```
-
-Een niet-ondersteund type wordt geweigerd vóór enig verzoek:
-
-```json
-{"result": "ERROR", "error": {"Code": "ADD_ZONE", "Message": "Record type \"NS\" is not supported by the DNS zone API. Supported types: A, AAAA, ALIAS, CAA, CNAME, DS, MX, NAPTR, PTR, SRV, TLSA, TXT.", "Details": "..."}}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### URL-doorverwijzing
-
-```rust
-let current = dna.get_forwarding("example.com");
-let result = dna.set_forwarding("example.com", "https://www.example.org", "Standard"); // or "Frame" (masked)
-let result = dna.delete_forwarding("example.com");
-```
-
-<details>
-<summary>Voorbeelduitvoer voor URL-doorverwijzing</summary>
-
-```json
-{"result": "OK", "data": {"Enabled": true, "RedirectAddress": "https://www.example.org/landing", "ForwardType": "Frame"}}
-```
-
-Als er geen doorverwijzing is ingesteld (de gateway antwoordt `Redirect information not found`), geeft `get_forwarding` `{"result": "OK", "data": {"Enabled": false, "RedirectAddress": "", "ForwardType": ""}}` terug; elke andere fout, zoals een niet-bestaand domein, wordt als fout teruggegeven. `set_forwarding` geeft `{"result": "OK", "data": {"RedirectAddress": "...", "ForwardType": "Standard"}}` terug. `delete_forwarding` geeft `{"result": "OK", "data": {"DomainName": "example.com", "Removed": true}}` terug, of `"Removed": false` als er geen doorverwijzing was ingesteld.
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Resellergegevens ophalen
-
-```rust
-let result = dna.get_reseller_details();
-let balance = dna.get_current_balance("USD"); // "USD" or "TRY"
-```
-
-<details>
-<summary>Voorbeelduitvoer voor resellergegevens ophalen</summary>
-
-```json
-{
-  "result": "OK",
-  "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "active": true,
-  "name": "Example Reseller",
-  "balance": "601.64",
-  "currency": "USD",
-  "symbol": "$",
-  "balances": [
-    {"balance": "601.64", "currency": "USD", "symbol": "$"},
-    {"balance": "1250.50", "currency": "TL", "symbol": "TL"}
-  ]
-}
-```
-
-`get_current_balance`:
-
-```json
-{
-  "ErrorCode": 0,
-  "OperationMessage": "Command completed succesfully.",
-  "OperationResult": "SUCCESS",
-  "Balance": "601.64",
-  "CurrencyId": 2,
-  "CurrencyInfo": null,
-  "CurrencyName": "USD",
-  "CurrencySymbol": "$"
-}
-```
-
-Het account meldt saldi in USD en TRY; elke andere valuta (EUR, GBP, ...) mislukt met `ErrorCode` `"BALANCE"`. Bij een fout is `OperationResult` `"FAILED"`, bevat `ErrorCode` de code (bijv. `"API_429"`) en is `Balance` `"0.00"`.
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-#### Hulpfuncties (zonder netwerk)
-
-```rust
-let is_tr = dna.is_tr_tld("example.com.tr"); // true
-
-// Complete and normalise a contact the way registration does
-let contact = dna.validate_contact(&json!({
-    "FirstName": " Jo ",
-    "Phone": "+1 (202) 555-0100",
-    "Country": "Turkey"
-}));
-```
-
-<details>
-<summary>Voorbeelduitvoer voor validate_contact</summary>
-
-```json
-{
-  "FirstName": "Jo",
-  "Phone": "2025550100",
-  "Country": "TR",
-  "LastName": "Isimyok",
-  "AddressLine1": "Addres yok",
-  "City": "ISTANBUL",
-  "ZipCode": "34000",
-  "PhoneCountryCode": "1",
-  "State": "ISTANBUL",
-  "Fax": "",
-  "FaxCountryCode": ""
-}
-```
-
-</details>
-
-<hr style="border: 4px solid #000; border-style: dashed;">
-
-## Foutafhandeling
-
-Elke netwerkmethode geeft een waarde terug; controleer `result`:
-
-```rust
-let out = dna.get_details("missing.com");
-if out["result"] == "ERROR" {
-    println!("{}", out["error"]["Code"]);        // "API_404"
-    println!("{}", out["error"]["GatewayCode"]); // "Dna.DomainService:Domain:10007"
-    println!("{}", out["error"]["Message"]);     // "The domain name you requested could not be found. ..."
-    println!("{}", out["error"]["Details"]);
-}
-```
-
-- HTTP-fouten gebruiken de code `API_<status>` (`API_400`, `API_404`, `API_429`, `API_500`, ...). Een lege foutbody wordt een leesbare melding zoals `HTTP 429 - Too Many Requests`. Als de gateway een eigen foutcode heeft gestuurd, bevat de envelop die ook als `GatewayCode` (bijv. `"Dna.DomainService:Domain:10007"`).
-- Een 301/302-antwoord betekent onjuiste inloggegevens: `Invalid API credentials`.
-- Validatiefouten van de gateway worden samengevoegd in `Details`, met de naam van het veld, bijv. `Contacts Phone - The field Phone must be a string with a maximum length of 16.`
-- Netwerkstoringen zijn fouten, nooit een leeg succes. Een time-out luidt `Could not reach the DomainNameAPI service: the connection timed out. (...)`; andere storingen luiden `Curl error during request: ...`. Hun code is `CURL_<curl-foutnummer>` (`CURL_28` bij een time-out, `CURL_6` bij DNS, `CURL_7` bij een geweigerde verbinding); `API_<n>` is gereserveerd voor HTTP-statussen.
-- Lokale validatie (niet-ondersteund recordtype, ontbrekend doorverwijzingsadres, geen domeinen om te controleren) faalt vóór enig verzoek met een beschrijvende code (`ADD_ZONE`, `SET_FORWARD`, `AVAILABILITY`, ...).
-
-### Diagnose
-
-```rust
-dna.get_request_data();        // {"url", "method", "payload"} of the last request
-dna.get_response_data();       // decoded last response, or {"raw_response": "<body>"}
-dna.get_response_headers();    // {"url", "content_type", "http_code", "total_time", "headers"}
-dna.get_parsed_response_data();// parsed body on success, {"Code", "Message", "Details"} on failure
-dna.get_last_function();       // e.g. "request:GET domains/info"
-dna.get_service_url();
-dna.set_service_url("https://ote.domainresellerapi.com/api/v1");
-```
-
-### Eigen transport
-
-De HTTP-laag is de trait `Transport`. Standaard is dat `UreqTransport` (blokkerende `ureq` met rustls, time-outs van 30 s totaal en 10 s voor de verbinding, redirects worden niet gevolgd). Vervang deze voor proxy's, eigen clients of tests:
-
-```rust
-use domainnameapi::{HttpRequest, HttpResponse, Transport, TransportError};
-
-struct MyTransport;
-impl Transport for MyTransport {
-    fn send(&self, req: &HttpRequest) -> Result<HttpResponse, TransportError> {
-        // perform req.method on req.url with req.headers and req.body
-        Ok(HttpResponse { status: 200, body: "{}".into(), headers: vec![] })
+    fn validate(&self, v: &mut Validator) {
+        v.required("domainName", &self.domain_name);
     }
 }
 
-dna.set_transport(Box::new(MyTransport));
+let notes = client.send(&DomainNotesRequest { domain_name: "example.com".into() }).await?;
 ```
 
-## Testmodus
+Jouw request krijgt alles wat de ingebouwde requests krijgen: inloggegevens, retries per veiligheidsklasse, pacing,
+read-only modus en foutafhandeling. Gebruik voor een wijziging `Endpoint::post(path, OperationSafety::Write)` (of
+`Billable`, `Destructive`), en voeg `.idempotent()` alleen toe als twee keer versturen geen kwaad kan.
 
-Geef `true` (of `"true"`, `"1"`, `"on"`, `"yes"`) mee als derde constructorargument om de OTE-testomgeving op `https://ote.domainresellerapi.com/api/v1` te gebruiken. Live-aanroepen gaan naar `https://api.domainresellerapi.com/api/v1`.
+## Fouten
 
-## Tests
+Elk mislukt request geeft een `Error` terug, ook als het request zijn controles niet doorstond en er niets is verstuurd.
 
-De testsuite heeft geen netwerk en geen inloggegevens nodig:
+```rust
+use domainnameapi::ErrorKind;
+
+match client.domains().renew("example.com", 1).await {
+    Ok(result) => println!("{} {}", result.success, result.message),
+    Err(e) if e.kind() == ErrorKind::Validation => {
+        println!("{}: {}", e.code(), e.message());   // Dna.DomainService:Domain:10007: ...
+        for field in e.validation_errors() {
+            println!("  {field}");
+        }
+    }
+    Err(e) if e.is_outcome_unknown() => {
+        // Een billable of wijzigend request mislukte op het netwerk: het kan de API hebben bereikt.
+        // Controleer de status voordat je het opnieuw verstuurt.
+        let info = client.domains().info("example.com").await?;
+    }
+    Err(e) => return Err(e.into()),
+}
+```
+
+| Methode | Betekenis |
+|---|---|
+| `kind()` | Een vaste classificatie (tabel hieronder). Vertak op deze waarde, niet op het bericht. |
+| `code()` | De foutcode van de API (zoals `Dna.DomainService:Domain:10007`), of een van de SDK-codes hieronder. De gangbare zijn constanten in `domainnameapi::codes`. |
+| `message()` | Wat er gebeurde. Standaardberichten worden vervangen door de details van de API. |
+| `status()` | De HTTP-status, of `None` als er geen antwoord kwam. |
+| `details()`, `validation_errors()` | Extra details en problemen per veld (van de API, of van de controles vóór het versturen). |
+| `correlation_id()` | De `X-Correlation-Id` van de gateway. Noem hem als je contact opneemt met support. |
+| `hint()` | Een korte suggestie voor wat je daarna kunt doen. |
+| `is_retryable()` | Of het herhalen van hetzelfde request later kan slagen. |
+| `is_outcome_unknown()` | Het request kan zijn uitgevoerd: een wijziging mislukte op het netwerk, of de API meldde dat de registry het mogelijk al heeft gedaan. |
+| `is_not_found()`, `is_insufficient_balance()` | Snelkoppelingen voor veelvoorkomende gevallen. |
+| `operation()`, `safety()` | Het mislukte request (`POST /api/v1/domains/renew`) en zijn veiligheidsklasse. |
+| `retry_after()`, `response_body()` | De `Retry-After` van de gateway en het ruwe antwoord. |
+
+`Error` implementeert `std::error::Error` en `Display` (`[CODE] message (HTTP 400); field: problem`), dus hij werkt met
+`?`, `anyhow` en `thiserror`.
+
+| `kind()` | Wanneer |
+|---|---|
+| `Auth` | Onjuiste of ontbrekende inloggegevens, of een onbekende of geschorste reseller in deze omgeving (401, redirect). |
+| `Forbidden` | Geauthenticeerd, maar niet toegestaan (403). |
+| `NotFound` | Het domein, contact, certificaat, de bestelling of een andere resource bestaat niet (404). |
+| `Validation` | De API weigerde de invoer of een bedrijfsregel faalde: ongeldig veld, domein vergrendeld, onvoldoende saldo (400, 422). |
+| `Conflict` | De status van de resource staat de operatie niet toe (409). |
+| `RateLimited` | Na de automatische retries nog steeds rate limited (429). |
+| `Server` | Een fout aan de serverzijde (5xx). Vaak tijdelijk. |
+| `Network`, `Timeout` | Geen antwoord: DNS, TLS, proxy, verbroken verbinding, of geen antwoord binnen de timeout. |
+| `InvalidInput` | Het request doorstond zijn controles niet, of een clientinstelling is ongeldig; er is niets verstuurd. |
+| `ReadOnly` | Geblokkeerd door de read-only modus; er is niets verstuurd. |
+| `Unknown` | Al het overige, inclusief een antwoord dat de SDK niet kon lezen. |
+
+`ErrorKind::as_str()` geeft de namen van de CLI (`auth`, `not_found`, `rate_limited`, ...). Codes die de SDK zelf instelt:
+
+| Code | Betekenis |
+|---|---|
+| `INVALID_RESELLER` | De gateway verwees door naar de suspendpagina: de reseller-ID is onbekend, inactief of geschorst **in deze omgeving**. |
+| `INVALID_API_KEY` | De sleutel hoort niet bij de reseller. Productie- en OTE-sleutels verschillen. |
+| `MISSING_API_KEY`, `MISSING_RESELLER_ID`, `NO_CREDENTIALS` | Een inloggegeven is leeg. |
+| `SUBRESELLER_NOT_ALLOWED` | Subreseller-accounts kunnen de API niet gebruiken. Gebruik de inloggegevens van de hoofdreseller. |
+| `UNAUTHORIZED` | Elke andere 401. |
+| `RATE_LIMITED` | 429 na de retries. |
+| `NETWORK`, `TIMEOUT` | Er kwam geen antwoord. |
+| `READ_ONLY` | Geblokkeerd door de read-only modus. |
+| `INVALID_INPUT`, `INVALID_CONFIGURATION` | Een request doorstond zijn controles niet, of een clientinstelling is ongeldig. |
+| `EMPTY_RESPONSE`, `INVALID_RESPONSE` | Een geslaagd antwoord was leeg of kon niet worden gelezen. |
+| `HTTP_<status>` | De API stuurde geen foutcode. |
+
+## Veiligheid, retries en rate limits
+
+Elk request heeft een veiligheidsklasse, dezelfde als die de `dna` CLI gebruikt:
+
+| `OperationSafety` | Betekent | Voorbeelden |
+|---|---|---|
+| `Read` | Geen neveneffecten, ook niet als de API POST of PUT gebruikt | zoeken, details, lijsten, verlengings- en verhuiscontroles, CSR-generatie, certificaatstatus |
+| `Write` | Een gratis wijziging die kan worden teruggedraaid | DNS-records, vergrendeling, privacy, nameservers, contacten |
+| `Billable` | Belast je saldo | registreren, verlengen, verhuizen, herstellen, SSL-aankoop en -verlenging, hostingbestelling |
+| `Destructive` | Verwijdert iets of is moeilijk terug te draaien | DNS-record verwijderen, DNSSEC verwijderen, certificaat intrekken |
+
+- **Read-only modus** (`read_only(true)` of `DNA_READ_ONLY=true`) blokkeert alles wat geen `Read` is, voordat het wordt
+  verstuurd. Gebruik hem tijdens het verkennen, in rapporten en in dashboards.
+- **Retries.** 429-antwoorden worden altijd herhaald, met inachtneming van `Retry-After`. Dit is veilig, zelfs voor billable
+  requests, omdat de gateway ze weigert voordat er iets wordt uitgevoerd. Netwerkfouten, timeouts en 502/503/504-antwoorden
+  worden alleen herhaald bij leesacties en bij de schrijfacties die de CLI als idempotent markeert (vergrendelen,
+  ontgrendelen, privacy, nameservers, DNS bijwerken en toepassen). Een registratie of verlenging wordt nooit twee keer verstuurd.
+- **Pacing.** De gateway staat 5 requests per seconde per sleutel toe en 2 per seconde voor domeinzoekopdrachten. De client
+  spreidt requests om onder deze limieten te blijven en houdt DNS-zoneaanroepen 1 seconde uit elkaar. Domeininfo en de
+  TLD-lijst vallen niet onder een rate limit.
+- **Soft quota.** Zoekopdrachten en infoaanvragen kosten 1 punt, al het andere 10. Boven 200 punten vertraagt de gateway elk
+  request met maximaal 5 seconden; punten nemen met 20% per minuut af. `send_with_response` toont de status in `quota`.
+
+## Async en blokkerende code
+
+De SDK is async en heeft een Tokio-runtime nodig (de runtime die `#[tokio::main]` start, of die van je server). De futures
+zijn `Send`, dus ze werken in `tokio::spawn` en in axum- en actix-handlers. Lijsten kun je per pagina lezen (`list`) of als
+`Stream` van items (`list_all`), die de volgende pagina pas ophaalt wanneer die nodig is:
+
+```rust
+use futures_util::TryStreamExt;
+
+let expiring: Vec<Domain> = client
+    .domains()
+    .list_all(DomainListRequest::new())
+    .try_filter(|d| std::future::ready(d.remaining_days < 30))
+    .try_collect()
+    .await?;
+```
+
+Er is geen blokkerende API: die zou het oppervlak verdubbelen voor weinig winst. Voer in synchrone code de aanroepen uit
+op een runtime:
+
+```rust
+let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+let account = runtime.block_on(client.account().get())?;
+```
+
+## Je code testen
+
+De SDK heeft alleen een HTTP-endpoint nodig. Om code die hem gebruikt te testen zonder de API aan te roepen, laat je
+`base_url` naar een lokale server wijzen (bijvoorbeeld een die is gebouwd met `wiremock`, `httpmock` of `axum`) en zet je
+pacing uit:
+
+```rust
+let client = Client::builder()
+    .credentials("test", "test")
+    .base_url(format!("http://{}", server_address))
+    .pace_requests(false)
+    .build()?;
+```
+
+De modellen implementeren `Default` en `Deserialize`, dus testgegevens kunnen uit JSON komen; fouten voor je mocks maak je
+met `Error::new(kind, code, message)`. Gebruik voor tests tegen de echte API OTE met een eigen sleutel.
+
+## Projectindeling
+
+```
+src/
+├── lib.rs           Crate-documentatie en re-exports
+├── client.rs        Client, ClientBuilder, Environment: versturen, retries, pacing, fouten uitlezen, list_all
+├── request.rs       Request, PagedRequest, Endpoint, OperationSafety, Query, JsonBody, Validator, Page, Empty
+├── error.rs         Error, ErrorKind, codes
+├── de.rs            Tolerant decoderen en de macro's die modellen en enums declareren (intern)
+├── account.rs       AccountClient     Saldi, profiel en transacties
+├── contacts.rs      ContactsClient    Contacthandles
+├── domains/         DomainsClient     Domeinen, plus forwarding(), child_name_servers() en documents()
+├── dns.rs           DnsClient         Zonerecords
+├── dnssec.rs        DnssecClient      DS-records
+├── ssl.rs           SslClient         Certificaten
+├── hosting.rs       HostingClient     Hostingpakketten en -diensten
+├── orders.rs        OrdersClient      Bestellingen
+└── products.rs      ProductsClient    TLD's, SSL-producten en prijzen
+tests/               Tests tegen een nep-API, de spec-dekkingstest en testdata/openapi.json
+examples/            Uitvoerbare programma's
+```
+
+Elke gebiedsmodule heeft dezelfde opbouw: de modellen en enums van de antwoorden, één requesttype per operatie
+(`XxxRequest`) en een `XxxClient`.
+
+## Ontwikkeling
 
 ```bash
-cargo test
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test                    # unit-, nep-API-, spec- en doctests; geen enkele roept de echte API aan
+cargo build --examples
 ```
 
-Ze bevat unittests voor de HTTP-laag, de foutvertaling, het maskeren van telemetrie en de hulpfuncties, plus een conformiteitstest die alle 134 php-dna-fixtures uit `tests/conformance/` afspeelt en controleert dat elk verzonden verzoek en elke retourwaarde overeenkomt met php-dna.
+Zonder lokale toolchain gebruik je Docker:
 
-## Foutrapportage (telemetrie)
-
-Als een API-aanroep mislukt, kan de bibliotheek een foutrapport sturen naar de eigen foutregistratie van DomainNameAPI (Sentry). Een klein willekeurig deel van de geslaagde aanroepen (4%, plus elke aanroep die langer dan 1 seconde duurt) wordt als prestatiegegeven verstuurd. Dit helpt DomainNameAPI problemen te vinden en op te lossen. Foutrapportage staat **standaard aan**.
-
-**Wat wordt verstuurd:**
-
-- foutcode en foutmelding
-- pad van het aangeroepen endpoint en de HTTP-methode
-- duur van de aanroep
-- applicatienaam (`DomainNameAPI-Rust`) en bibliotheekversie
-- reseller-ID en domeinnaam
-- het openbare IP-adres van de server (op de achtergrond opgevraagd via `api.ipify.org`)
-- de gebruikersnaam van het besturingssysteem
-- het API-verzoek en -antwoord, inclusief de contactgegevens van het domein; alleen inloggegevens worden gemaskeerd — EPP-/authcodes, API-sleutels, wachtwoorden, geheimen en tokens worden vervangen door `***`
-
-**Wat nooit wordt verstuurd:** EPP-/authcodes, API-sleutels, wachtwoorden of tokens in leesbare vorm.
-
-Rapporten worden vanuit een achtergrondthread met korte time-outs verstuurd; ze blokkeren uw aanroep nooit en laten die nooit mislukken. Verwachte fouten zoals "domein niet gevonden" of "onvoldoende saldo" worden niet gerapporteerd.
-
-**Waarom en hoe lang:** de gegevens worden alleen gebruikt voor gebruiksmeting en vroege diagnose van problemen, en worden 30 dagen bewaard op de eigen Sentry-server van DomainNameAPI, waarna ze automatisch worden verwijderd.
-
-**Uitschakelen of beperken:**
-
-```rust
-let mut dna = DomainNameApi::new(reseller_id, api_key, false);
-dna.set_error_reporting_enabled(false); // nothing is sent
-
-// or keep it on but send only the error code and message, endpoint,
-// timing, versions and reseller ID (no request/response data, domain, IP or user name)
-dna.set_telemetry_minimal(true);
+```bash
+docker run --rm -v "$PWD":/src -w /src rust:1.83 sh -c 'rustup component add rustfmt clippy; cargo fmt --check; cargo clippy --all-targets -- -D warnings; cargo test'
 ```
 
-> 🔒 **Beveiliging:** controle van TLS-certificaten staat aan. Op een host met een verouderde CA-bundel kan die worden uitgeschakeld met `dna.set_ssl_verification(false);` — dit wordt afgeraden; de CA-bundel bijwerken is de betere oplossing.
+De tests roepen nooit de echte API aan: ze gebruiken een kleine HTTP-server op 127.0.0.1 (`tests/common`). CI draait ze op
+de minimaal ondersteunde Rust-versie (1.83) en op de nieuwste stabiele versie.
 
-## Return en Foutcodes met Beschrijvingen
+`tests/testdata/openapi.json` is het API-document dat de `dna` CLI embedt. `tests/spec.rs` controleert of elke operatie
+erin precies één requesttype heeft met de methode, het pad, de veiligheidsklasse en de idempotentie van de CLI, of elk
+request alleen queryparameters en bodyvelden verstuurt die het document beschrijft (inclusief geneste objecten, waarbij
+verplichte velden aanwezig moeten zijn), en of de antwoordtypen de namen uit het document gebruiken. Als de API een
+operatie erbij krijgt, werk je het document bij en faalt de test totdat het requesttype bestaat.
 
-| Code | Beschrijving | Detail |
-|------|-------------|--------|
-| 1000 | Commando succesvol voltooid | Operatie succesvol. |
-| 1001 | Commando succesvol voltooid; actie in behandeling | Operatie succesvol. De operatie is echter momenteel in de wachtrij geplaatst voor voltooiing. |
-| 2003 | Vereiste parameter ontbreekt | Parameter ontbreekt error. Bijvoorbeeld: geen telefoon invoer in contactinformatie. |
-| 2105 | Object komt niet in aanmerking voor verlenging | Domeinstatus is niet geschikt voor verlenging, vergrendeld voor update operaties. Status mag niet "clientupdateprohibited" zijn. Kan te wijten zijn aan andere statusvoorwaarden. |
-| 2200 | Authenticatiefout | Autorisatiefout, beveiligingscode is onjuist of domein is geregistreerd bij een andere registrar. |
-| 2302 | Object bestaat | Domeinnaam of nameserver informatie bestaat al in database. Kan niet geregistreerd worden. |
-| 2303 | Object bestaat niet | Domeinnaam of nameserver informatie bestaat niet in database. Nieuwe registratie vereist. |
-| 2304 | Objectstatus verbiedt operatie | Domeinstatus is niet geschikt voor updates, vergrendeld voor update operaties. Status mag niet "clientupdateprohibited" zijn. Kan te wijten zijn aan andere statusvoorwaarden. |
+## Upgraden van 1.x
 
-| CODE | DETAIL |
-|------|--------|
-| 101 | Systeemfout gedetailleerd voor ({0})! |
-| 102 | Meerdere fouten gedetailleerd voor ({0})! |
-| 103 | Onbekende fouten gedetailleerd voor ({0})! |
-| 200 | API commando niet gevonden ({0})! |
-| 210 | API service niet gevonden ({0})! |
-| 211 | API service provider niet ingesteld! |
-| 300 | Reseller niet gevonden! |
-| 301 | Uw huidige IP-adres is niet geautoriseerd voor toegang. Zorg ervoor dat u verbinding maakt vanaf een geautoriseerd IP-adres en probeer opnieuw |
-| 310 | TLD wordt niet ondersteund! |
-| 320 | API niet gevonden! |
-| 321 | Valuta wordt niet ondersteund! |
-| 330 | Vereiste parameter(s) niet ingesteld ({0}). |
-| – | Zorg ervoor dat u alle contactobjecten volledig verzendt |
-| 340 | Prijsdefinitie niet gevonden ({0}[{1}]-{2}{3}). |
-| 350 | Onvoldoende reseller saldo. (Reseller Id : {0} - Huidig Saldo : {1} {2}). |
-| 350 | Boekhoudvaluta komt niet overeen of het saldo is niet voldoende. |
-| 360 | Ongeldige API aanvraag voor veld ({0}). |
-| 360 | API quota overschreden! |
-| 361 | Throttled error! |
-| 362 | Premium domein is momenteel niet beschikbaar voor registratie. |
-| 363 | Operatie geannuleerd omdat domein in auto-vernieuwingsperiode is |
-| 364 | Dit domein is momenteel niet beschikbaar voor transactie vanwege een probleem met het register |
+2.0 is een nieuwe SDK. 1.x was een port van de PHP-bibliotheek: een blokkerende `DomainNameApi`-client die ongetypeerde
+`serde_json::Value`-envelopes teruggaf. 2.0 is async, met getypeerde requests en modellen, `Result<T, Error>` en een builder.
 
-| CODE | DETAIL |
-|------|--------|
-| 400 | Ongeldig contact ({0}). |
-| 401 | Contactinfo kan niet synchroniseren. |
-| 402 | Geen toegang to contactinformatie van register. |
-| 403 | HET SYSTEEM HEEFT ONTBREKENDE INFORMATIE. VOER UW STANDAARDINFORMATIE IN OF NEEM CONTACT OP MET HET ONDERSTEUNINGSTEAM. |
-| 404 | DOMEINCONTACT KAN NIET WORDEN BIJGEWERKT. TOESTEMMING VAN HET REGISTER. |
-| 410 | Contact niet gevonden. |
-| 410 | Contact niet gevonden ({0}). |
-| 420 | Ongeldig Api commando voor contact {0}. |
-| 430 | Contact api niet gevonden. |
-| 440 | Contact is niet gesynchroniseerd. |
-| 450 | Te veel domeincontacten.. ! |
-| 451 | Kon niet doorgaan met contact update. |
+| 1.x | 2.0 |
+|---|---|
+| `DomainNameApi::new(id, key, true)` | `Client::builder().credentials(id, key).environment(Environment::Ote).build()?` |
+| `dna.get_reseller_details()`, `dna.get_current_balance(..)` | `client.account().get()` / `profile()` |
+| `dna.check_availability(..)` | `client.domains().search(..)` / `bulk_search(..)` |
+| `dna.get_list(..)` | `client.domains().list(..)` / `list_all(..)` |
+| `dna.get_details(domain)` | `client.domains().info(domain)` |
+| `dna.register_with_contact_info(..)` | `client.domains().register_with_contacts(..)` |
+| `dna.renew(domain, period)` | `client.domains().renew(domain, years)` |
+| `dna.transfer(domain, epp_code, period)` | `client.domains().transfer(DomainTransferRequest::new(domain, auth_code).years(years))` |
+| `dna.check_transfer(domain, auth_code)` | `client.domains().transfer_check(domain, auth_code)` |
+| `dna.modify_name_server(..)` | `client.domains().set_name_servers(..)` |
+| `dna.enable_theft_protection_lock(domain)` | `client.domains().lock(domain)` |
+| `dna.modify_privacy_protection_status(..)` | `client.domains().set_privacy(..)` |
+| `dna.save_contacts(..)` | `client.domains().update_contacts(..)` |
+| `dna.add_child_name_server(..)` | `client.domains().child_name_servers().add(..)` |
+| `dna.get_resource_records(domain)` | `client.dns().list(domain)` |
+| `dna.add_resource_record(..)` | `client.dns().add(..)` |
+| `dna.set_resource_record_set(..)` | `client.dns().update(..)` |
+| `dna.apply_resource_records(domain)` | `client.dns().apply(domain)` |
+| `dna.set_forwarding(..)` | `client.domains().forwarding().set(..)` |
+| `dna.get_tld_list(..)` | `client.products().all_tlds(..)` |
+| `result["result"] == "ERROR"` | `Err(e)` met `e.kind()` en `e.code()` |
 
-| CODE | DETAIL |
-|------|--------|
-| 500 | Ongeldig domein id. |
-| 500 | Ongeldig domein id ({0}). |
-| 501 | Domein kon niet worden gesynchroniseerd({0}) |
-| 502 | Interne transfer mislukt |
-| 503 | Domeinregistratie is niet beschikbaar. |
-| 504 | Domeininformatie komt niet overeen .. Voor :{0} |
-| 505 | Voer het IP-adres in. |
-| 506 | Domeintransfer is gestart maar contactinfo kon niet worden gelezen .. |
-| 507 | Autorisatiefout. |
-| 510 | Domein niet gevonden. |
-| 511 | Verlopen domeinen kunnen niet worden gevonden. |
-| 512 | Domein is niet verlengbaar. |
-| 513 | Domein is niet in updatebare status. Het moet actief zijn om te worden bijgewerkt |
-| 514 | Redemption Period verwacht. |
-| 520 | Ongeldig Api commando voor domein "{0}". |
-| 530 | Ongeldige domeinperiode. Periode moet {0} tot {1} jaar zijn. Gevraagde periode is {2} jaar. |
-| 540 | Domein kan niet worden verlengd tot meer dan {0} jaar vanaf huidige datum. |
-| 550 | Ongeldige domeinnaam. Domein moet {0} tot {1} karakters lang zijn. Gevraagde domeinnaam is {2} karakters. |
-| 560 | Ongeldig nameserver aantal. Domein moet {0} tot {1} nameservers hebben. Gevraagd nameserver aantal is {2}. |
-| 561 | Geen nameserver informatie gevonden in de binnenkomende aanvraag |
-| 570 | Idn niet ondersteund voor tld "{0}". |
-| 571 | Periode ongeldig. |
-| 572 | Commando ongeldig. |
-| 573 | Domeinnamen niet gevonden. |
-| 574 | TLD namen niet gevonden. |
-| 575 | Domein is niet in updatebare status. Het moet actief zijn voor nameservers om te worden bijgewerkt |
-| 576 | Domein kan worden vernieuwd in de laatste 1 maand voor de vervaldatum |
-| 580 | Transfer niet ondersteund voor tld "{0}". |
-| 581 | Child nameserver niet gevonden |
-| 582 | Transfer gestart door andere reseller. |
-| 583 | Transfer niet geïnitialiseerd. Neem contact op met het ondersteuningsteam. |
-| 584 | Objectstatus verbiedt operatie |
-| 590 | Auth code is vereist voor deze transfer. |
-| 591 | Auth code is niet geldig. |
-| 592 | Transfer lock bestaat op domein. |
-| 593 | Domein kan niet worden getransfereerd, Statusinformatie en Transfer Lock moeten voldoen aan de vereiste criteria. (Statusinformatie: #ok) |
-| 594 | Domein nameserver adres kon niet worden opgelost ({0}) |
-| 595 | Contactinformatie kan niet worden gelezen (whois.registrar.tld) Zorg ervoor dat privacy bescherming status open is |
-| 596 | Contactinformatie kon niet worden geverifieerd |
-| 597 | Tld niet gevonden |
-| 598 | Onbekende fout opgetreden |
-| 599 | Domein Forward niet gevonden |
+De aanroepen voor het goedkeuren, annuleren en weigeren van verhuizingen en `sync_from_registry` uit 1.x maken geen deel
+uit van het document van de REST API en hebben geen tegenhanger in 2.0. De MSRV blijft 1.83; `ureq` is vervangen door
+`reqwest`, dus 2.0 heeft een Tokio-runtime nodig. 1.x stuurde foutrapporten naar Sentry; 2.0 stuurt nergens iets heen
+behalve naar de API.
+
+## Links
+
+- [`dna` CLI en MCP-server](https://github.com/domainreseller/cli): dezelfde API vanuit de terminal en vanuit AI-agents.
+- [API-documentatie](https://www.domainnameapi.com/docs/)
+- [Changelog](CHANGELOG.md)
 
 ## Licentie
 
-Apache License 2.0 — zie [LICENSE](LICENSE).
+Apache License 2.0. Zie [LICENSE](LICENSE).
