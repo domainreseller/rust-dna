@@ -1,157 +1,238 @@
-//! Shared test helpers: a fake transport that serves queued responses and
-//! records every request, and a php-dna-tolerant JSON comparator.
+//! A fake Domain Name API: a small HTTP/1.1 server on 127.0.0.1 that records every request and answers with queued
+//! replies. Tests never call the real API.
+
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
+use domainnameapi::Client;
+use std::collections::{HashMap, VecDeque};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
-use domainnameapi::php;
-use domainnameapi::{DomainNameApi, HttpRequest, HttpResponse, Transport, TransportError};
-use serde_json::{Map, Value};
+/// A request the fake API received.
+#[derive(Debug, Clone)]
+pub struct Recorded {
+    pub method: String,
+    pub path: String,
+    pub query: Vec<(String, String)>,
+    pub headers: HashMap<String, String>,
+    pub body: String,
+}
 
-pub const RESELLER: &str = "00000000-0000-4000-8000-000000000001";
-pub const API_KEY: &str = "conformance-api-key";
-pub const BASE_URL: &str = "http://mock.test/api/v1";
+impl Recorded {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(&name.to_ascii_lowercase()).map(String::as_str)
+    }
 
-/// What the fake transport answers.
-#[derive(Clone, Debug)]
-pub enum Reply {
-    Http(u16, String),
-    Fail(TransportError),
+    pub fn query(&self, name: &str) -> Option<&str> {
+        self.query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    }
+
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::from_str(&self.body).expect("request body is JSON")
+    }
+}
+
+/// An answer of the fake API.
+#[derive(Debug, Clone)]
+pub struct Reply {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+    /// Waits this long before answering.
+    pub delay: Option<Duration>,
+    /// Closes the connection without answering: a network error for the client.
+    pub hang_up: bool,
+}
+
+impl Reply {
+    pub fn json(status: u16, body: serde_json::Value) -> Reply {
+        Reply::text(status, &body.to_string())
+    }
+
+    pub fn text(status: u16, body: &str) -> Reply {
+        Reply { status, headers: Vec::new(), body: body.to_string(), delay: None, hang_up: false }
+    }
+
+    pub fn hang_up() -> Reply {
+        Reply { hang_up: true, ..Reply::text(200, "") }
+    }
+
+    pub fn header(mut self, name: &str, value: &str) -> Reply {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    pub fn delay(mut self, delay: Duration) -> Reply {
+        self.delay = Some(delay);
+        self
+    }
 }
 
 #[derive(Default)]
-pub struct State {
-    pub queue: VecDeque<Reply>,
-    pub requests: Vec<HttpRequest>,
-    pub exhausted: bool,
+struct State {
+    requests: Vec<Recorded>,
+    replies: VecDeque<Reply>,
 }
 
-#[derive(Clone, Default)]
-pub struct FakeTransport {
-    pub state: Arc<Mutex<State>>,
+pub struct FakeApi {
+    pub addr: SocketAddr,
+    state: Arc<Mutex<State>>,
 }
 
-impl FakeTransport {
-    pub fn new(replies: Vec<Reply>) -> Self {
-        let t = FakeTransport::default();
-        t.state.lock().unwrap().queue = replies.into();
-        t
+impl FakeApi {
+    pub async fn start() -> FakeApi {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = Arc::new(Mutex::new(State::default()));
+        let shared = state.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let state = shared.clone();
+                tokio::spawn(async move {
+                    let _ = serve(stream, state).await;
+                });
+            }
+        });
+        FakeApi { addr, state }
     }
 
-    pub fn requests(&self) -> Vec<HttpRequest> {
+    pub fn base_url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    /// Queues an answer. Without queued answers the fake API answers 200 with `{}` (or `[]` for the endpoints that
+    /// return a list).
+    pub fn reply(&self, reply: Reply) -> &Self {
+        self.state.lock().unwrap().replies.push_back(reply);
+        self
+    }
+
+    pub fn reply_json(&self, status: u16, body: serde_json::Value) -> &Self {
+        self.reply(Reply::json(status, body))
+    }
+
+    pub fn requests(&self) -> Vec<Recorded> {
         self.state.lock().unwrap().requests.clone()
     }
 
-    pub fn exhausted(&self) -> bool {
-        self.state.lock().unwrap().exhausted
+    pub fn last(&self) -> Recorded {
+        self.requests().pop().expect("a request was sent")
+    }
+
+    /// A client for this fake API: test credentials, no pacing.
+    pub fn client(&self) -> Client {
+        self.builder().build().unwrap()
+    }
+
+    pub fn builder(&self) -> domainnameapi::ClientBuilder {
+        Client::builder().credentials("test-reseller", "test-key").base_url(self.base_url()).pace_requests(false)
     }
 }
 
-impl Transport for FakeTransport {
-    fn send(&self, request: &HttpRequest) -> Result<HttpResponse, TransportError> {
-        let mut state = self.state.lock().unwrap();
-        state.requests.push(request.clone());
-        match state.queue.pop_front() {
-            Some(Reply::Http(status, body)) => Ok(HttpResponse {
-                status,
-                body,
-                headers: vec![("content-type".into(), "application/json".into())],
-            }),
-            Some(Reply::Fail(err)) => Err(err),
-            None => {
-                state.exhausted = true;
-                Ok(HttpResponse {
-                    status: 500,
-                    body: r#"{"error":{"message":"conformance: no queued response"}}"#.into(),
-                    headers: vec![],
-                })
+async fn serve(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let head_end = loop {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        buffer.extend_from_slice(&chunk[..n]);
+        if let Some(i) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&buffer[..head_end]).to_string();
+    let mut lines = head.split("\r\n");
+    let mut first = lines.next().unwrap_or_default().split(' ');
+    let method = first.next().unwrap_or_default().to_string();
+    let target = first.next().unwrap_or_default().to_string();
+    let mut headers = HashMap::new();
+    for line in lines.filter(|l| !l.is_empty()) {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+    let length: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+    while buffer.len() < head_end + length {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..n]);
+    }
+    let body = String::from_utf8_lossy(&buffer[head_end..]).to_string();
+    let (path, query) = match target.split_once('?') {
+        Some((path, query)) => (path.to_string(), parse_query(query)),
+        None => (target.clone(), Vec::new()),
+    };
+
+    let reply = {
+        let mut state = state.lock().unwrap();
+        state.requests.push(Recorded { method: method.clone(), path: path.clone(), query, headers, body });
+        state.replies.pop_front().unwrap_or_else(|| default_reply(&method, &path))
+    };
+    if let Some(delay) = reply.delay {
+        tokio::time::sleep(delay).await;
+    }
+    if reply.hang_up {
+        return Ok(());
+    }
+    let mut response = format!(
+        "HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+        reply.status,
+        reply.body.len()
+    );
+    for (name, value) in &reply.headers {
+        response.push_str(&format!("{name}: {value}\r\n"));
+    }
+    response.push_str("\r\n");
+    response.push_str(&reply.body);
+    stream.write_all(response.as_bytes()).await?;
+    stream.shutdown().await
+}
+
+fn default_reply(method: &str, path: &str) -> Reply {
+    let list = (method == "GET" && path.ends_with("/domains/zones"))
+        || path.ends_with("/hostings/packages")
+        || path.ends_with("/hostings/plans");
+    Reply::text(200, if list { "[]" } else { "{}" })
+}
+
+fn parse_query(query: &str) -> Vec<(String, String)> {
+    query
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|pair| {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            (decode(k), decode(v))
+        })
+        .collect()
+}
+
+fn decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                out.push(u8::from_str_radix(hex, 16).unwrap());
+                i += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
             }
         }
     }
-}
-
-/// A client wired to a fake transport, telemetry off (and its DSN emptied,
-/// so the suite can never reach the real Sentry project), no zone pacing.
-pub fn client(replies: Vec<Reply>) -> (DomainNameApi, FakeTransport) {
-    let transport = FakeTransport::new(replies);
-    let mut dna = DomainNameApi::new(RESELLER, API_KEY, false);
-    dna.set_error_reporting_enabled(false);
-    dna.set_telemetry_dsn("");
-    dna.set_zone_min_interval(std::time::Duration::ZERO);
-    dna.set_service_url(BASE_URL);
-    dna.set_transport(Box::new(transport.clone()));
-    (dna, transport)
-}
-
-/// Split a recorded URL into (path relative to /api/v1/, decoded query map).
-pub fn split_url(url: &str) -> (String, Map<String, Value>) {
-    let rest = url
-        .strip_prefix(BASE_URL)
-        .unwrap_or(url)
-        .trim_start_matches('/');
-    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
-    let mut map = Map::new();
-    for pair in query.split('&').filter(|p| !p.is_empty()) {
-        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        map.insert(php::urldecode(k), Value::String(php::urldecode(v)));
-    }
-    (path.to_string(), map)
-}
-
-/// Equality with php-dna's JSON quirks tolerated: `[]` equals `{}`, numbers
-/// compare by value, object key order is ignored.
-pub fn loose_eq(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
-        (Value::Array(x), Value::Object(y)) | (Value::Object(y), Value::Array(x)) => {
-            x.is_empty() && y.is_empty()
-        }
-        (Value::Array(x), Value::Array(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| loose_eq(p, q))
-        }
-        (Value::Object(x), Value::Object(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .all(|(k, v)| y.get(k).map(|w| loose_eq(v, w)).unwrap_or(false))
-        }
-        _ => a == b,
-    }
-}
-
-/// First differing path between two values (for failure messages).
-pub fn first_diff(a: &Value, b: &Value, path: &str) -> Option<String> {
-    if loose_eq(a, b) {
-        return None;
-    }
-    match (a, b) {
-        (Value::Object(x), Value::Object(y)) => {
-            for (k, v) in x {
-                let p = format!("{path}.{k}");
-                match y.get(k) {
-                    None => return Some(format!("{p}: missing on expected side")),
-                    Some(w) => {
-                        if let Some(d) = first_diff(v, w, &p) {
-                            return Some(d);
-                        }
-                    }
-                }
-            }
-            for k in y.keys() {
-                if !x.contains_key(k) {
-                    return Some(format!("{path}.{k}: missing on actual side"));
-                }
-            }
-            None
-        }
-        (Value::Array(x), Value::Array(y)) if x.len() == y.len() => {
-            for (i, (v, w)) in x.iter().zip(y).enumerate() {
-                if let Some(d) = first_diff(v, w, &format!("{path}[{i}]")) {
-                    return Some(d);
-                }
-            }
-            None
-        }
-        _ => Some(format!("{path}: actual {a} != expected {b}")),
-    }
+    String::from_utf8(out).unwrap()
 }

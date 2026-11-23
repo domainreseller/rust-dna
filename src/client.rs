@@ -1,2016 +1,1145 @@
-//! The client: HTTP layer, error mapping, diagnostics and the domain,
-//! account, transfer and contact methods (php-dna `DNARest` + facade).
+//! [`Client`], [`ClientBuilder`], [`Environment`] and the HTTP layer: sending, retries, pacing and error parsing.
 
-use std::time::{Duration, Instant};
+use crate::error::{codes, Error, ErrorKind};
+use crate::request::{Endpoint, FieldError, Method, OperationSafety, PagedRequest, Paging, Request, Validator};
+use futures_util::stream::{self, BoxStream, StreamExt};
+use serde_json::Value;
+use std::collections::{HashMap, VecDeque};
+use std::fmt;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
-use serde_json::{json, Map, Value};
+/// The SDK version, for example `"2.0.0"`.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-use crate::php::{self, get, get_path, obj};
-use crate::telemetry::{CallContext, Telemetry};
-use crate::transport::{HttpRequest, Transport, UreqTransport};
-use crate::{
-    DEFAULT_CONNECT_TIMEOUT, DEFAULT_ERRORS, DEFAULT_NAMESERVERS, DEFAULT_TIMEOUT, RESULT_ERROR,
-    RESULT_OK, URL_OTE, URL_PROD, USER_AGENT, ZONE_MIN_INTERVAL,
-};
+/// The default `User-Agent` header.
+pub const DEFAULT_USER_AGENT: &str =
+    concat!("DomainNameAPI-Rust/", env!("CARGO_PKG_VERSION"), " (+https://github.com/domainreseller/rust-dna)");
 
-/// A failed gateway call: the HTTP status (or curl error number) and message.
-#[derive(Debug, Clone)]
-pub(crate) struct ApiError {
-    pub code: i64,
-    pub message: String,
+/// The API deployment a client talks to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Environment {
+    /// The live environment: real domains, real charges. `https://api.domainresellerapi.com`
+    #[default]
+    Production,
+    /// The test environment (Operational Test & Evaluation), with its own data and its own API key. Nothing you do
+    /// there touches live domains or your live balance. `https://ote.domainresellerapi.com`
+    Ote,
 }
 
-type ApiResult = Result<Value, ApiError>;
-
-/// Boolean flags accepted from panels: the constructor's `test_mode` and
-/// `modify_privacy_protection_status`'s `status`.
-///
-/// Panels store checkbox settings as strings or numbers, so besides `bool`
-/// these arguments accept strings: `"true"`, `"1"`, `"on"` and `"yes"`
-/// (case-insensitive, trimmed) mean `true`, anything else means `false`; and
-/// integers: `1` is `true`, anything else `false` (php-dna
-/// `FILTER_VALIDATE_BOOLEAN`, BUG-10284).
-pub trait BoolFlag {
-    /// Resolve to a boolean.
-    fn into_flag(self) -> bool;
-}
-
-impl BoolFlag for bool {
-    fn into_flag(self) -> bool {
-        self
+impl Environment {
+    /// Returns the environment's base address.
+    pub fn base_url(self) -> &'static str {
+        match self {
+            Environment::Production => "https://api.domainresellerapi.com",
+            Environment::Ote => "https://ote.domainresellerapi.com",
+        }
     }
-}
 
-impl BoolFlag for &str {
-    fn into_flag(self) -> bool {
-        matches!(
-            php::trim(self).to_ascii_lowercase().as_str(),
-            "1" | "true" | "on" | "yes"
-        )
-    }
-}
-
-impl BoolFlag for String {
-    fn into_flag(self) -> bool {
-        self.as_str().into_flag()
-    }
-}
-
-impl BoolFlag for &String {
-    fn into_flag(self) -> bool {
-        self.as_str().into_flag()
-    }
-}
-
-impl BoolFlag for i64 {
-    fn into_flag(self) -> bool {
-        self == 1
-    }
-}
-
-impl BoolFlag for i32 {
-    fn into_flag(self) -> bool {
-        self == 1
-    }
-}
-
-/// Optional arguments of [`DomainNameApi::register_with_contact_info_opts`].
-/// `Default` gives php-dna's defaults.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RegisterOptions {
-    /// Nameservers (list or map). Empty: the library defaults
-    /// (`ns1/ns2.domainnameapi.com`).
-    pub name_servers: Value,
-    /// Registrar (theft protection) lock. Default `true`.
-    pub epp_lock: bool,
-    /// Privacy protection. Default `false`.
-    pub privacy_lock: bool,
-    /// TLD attributes (TRABIS fields for .tr). Default empty.
-    pub additional_attributes: Value,
-}
-
-impl Default for RegisterOptions {
-    fn default() -> Self {
-        Self {
-            name_servers: json!([]),
-            epp_lock: true,
-            privacy_lock: false,
-            additional_attributes: json!({}),
+    /// Reads an environment name: `production`, `prod`, `live` or `ote`, `test`, `testing`, `sandbox`. Test-mode flags
+    /// as stored by panels and the other SDKs work too: `true`, `1`, `on`, `yes` mean OTE and `false`, `0`, `off`,
+    /// `no` (or nothing) mean production.
+    pub fn parse(text: &str) -> Option<Environment> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "" | "production" | "prod" | "live" | "false" | "0" | "off" | "no" => Some(Environment::Production),
+            "ote" | "test" | "testing" | "sandbox" | "true" | "1" | "on" | "yes" => Some(Environment::Ote),
+            _ => None,
         }
     }
 }
 
-/// DomainNameAPI client (php-dna `DomainNameAPI_PHPLibrary`).
-///
-/// Every network method returns a [`serde_json::Value`] with php-dna's
-/// envelope and never panics on gateway or network failures.
-pub struct DomainNameApi {
-    reseller_id: String,
-    api_key: String,
-    service_url: String,
-    ssl_verify: bool,
-    transport: Box<dyn Transport>,
-    pub(crate) telemetry: Telemetry,
-    last_request: Value,
-    last_response: Value,
-    last_response_headers: Value,
-    pub(crate) last_parsed_response: Value,
-    last_function: String,
-    transport_failed: bool,
-    last_gateway_code: String,
-    start_at: f64,
-    last_zone_request_at: Option<Instant>,
-    zone_min_interval: Duration,
+impl fmt::Display for Environment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Environment::Production => "production",
+            Environment::Ote => "ote",
+        })
+    }
 }
 
-impl std::fmt::Debug for DomainNameApi {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DomainNameApi")
-            .field("reseller_id", &self.reseller_id)
-            .field("api_key", &"***")
-            .field("service_url", &self.service_url)
-            .field("ssl_verify", &self.ssl_verify)
+/// The soft-quota state the gateway reports after a request.
+///
+/// The quota never rejects requests: once `used` exceeds `limit`, the gateway delays each answer (by `delay_seconds`,
+/// at most 5) until points decay by 20% per minute. Lookups cost 1 point, everything else 10.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct Quota {
+    /// The area: `domain`, `contact`, `ssl`, `products`, `order`, `deposit` or `hosting`.
+    pub scope: String,
+    /// The points this request cost.
+    pub cost: f64,
+    /// The points in the bucket after this request.
+    pub used: f64,
+    /// Where slowing down starts (200).
+    pub limit: f64,
+    /// The seconds this answer was held back.
+    pub delay_seconds: f64,
+    /// The seconds until the bucket is back under the limit.
+    pub reset_seconds: f64,
+}
+
+/// A decoded answer together with the HTTP details, returned by [`Client::send_with_response`].
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct Response<T> {
+    /// The decoded answer.
+    pub value: T,
+    /// The HTTP status of the final attempt.
+    pub status: u16,
+    /// The gateway's correlation ID (or the one the client sent). Quote it when contacting support.
+    pub correlation_id: String,
+    /// The soft-quota state, when the gateway reported it.
+    pub quota: Option<Quota>,
+    /// The number of HTTP attempts, including retries.
+    pub attempts: u32,
+    /// The total time, including retries and pacing.
+    pub duration: Duration,
+}
+
+/// The client of the Domain Name API reseller REST API.
+///
+/// Each area of the API has its own client, grouped like the `dna` CLI's commands: [`account`](Client::account),
+/// [`contacts`](Client::contacts), [`domains`](Client::domains), [`dns`](Client::dns), [`dnssec`](Client::dnssec),
+/// [`ssl`](Client::ssl), [`hosting`](Client::hosting), [`orders`](Client::orders) and
+/// [`products`](Client::products). Any request, including your own [`Request`] types, can also be sent with
+/// [`send`](Client::send).
+///
+/// ```no_run
+/// use domainnameapi::{Client, Environment};
+///
+/// # async fn run() -> Result<(), domainnameapi::Error> {
+/// let client = Client::builder()
+///     .credentials("your-reseller-id", "your-api-key")
+///     .environment(Environment::Ote)
+///     .build()?;
+///
+/// let account = client.account().get().await?;
+/// println!("{}: {} USD", account.reseller_name, account.usd_balance);
+/// # Ok(()) }
+/// ```
+///
+/// A `Client` is cheap to clone (it holds an [`Arc`]) and safe to share between tasks. Create one per set of
+/// credentials and reuse it: it paces requests to stay under the gateway's rate limits. Failed requests return an
+/// [`Error`]. Rate limits are respected automatically, 429 answers are retried, and network errors are retried only
+/// for reads and idempotent writes, so nothing is charged twice. The SDK sends nothing anywhere except your requests
+/// to the API.
+#[derive(Clone)]
+pub struct Client {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    http: reqwest::Client,
+    reseller_id: String,
+    api_key: String,
+    environment: Environment,
+    base_url: String,
+    timeout: Duration,
+    max_retries: u32,
+    max_retry_delay: Duration,
+    read_only: bool,
+    user_agent: String,
+    pacer: Option<Pacer>,
+}
+
+impl fmt::Debug for Client {
+    /// Shows the environment, the base address and read-only mode. Never the credentials.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Client")
+            .field("environment", &self.inner.environment)
+            .field("base_url", &self.inner.base_url)
+            .field("read_only", &self.inner.read_only)
             .finish_non_exhaustive()
     }
 }
 
-/// Reason phrase for an HTTP status (fallback message for empty bodies).
-fn http_status_reason(status: i64) -> &'static str {
-    match status {
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        402 => "Payment Required",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        408 => "Request Timeout",
-        409 => "Conflict",
-        422 => "Unprocessable Entity",
-        429 => "Too Many Requests",
-        500 => "Internal Server Error",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        s if s >= 500 => "Server Error",
-        s if s >= 400 => "Client Error",
-        _ => "Unexpected Response",
+impl Client {
+    /// Creates a production client with default settings.
+    ///
+    /// `reseller_id` (a UUID) and `api_key` come from the reseller panel's API settings; panel login details do not
+    /// work. Use [`Client::builder`] for the OTE test environment and other settings.
+    pub fn new(reseller_id: impl Into<String>, api_key: impl Into<String>) -> Result<Client, Error> {
+        Client::builder().credentials(reseller_id, api_key).build()
     }
-}
 
-/// `/Exception of type '[^']*' was thrown/i`.
-fn is_abp_boilerplate(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    let needle = "exception of type '";
-    let mut from = 0;
-    while let Some(pos) = lower[from..].find(needle) {
-        let start = from + pos + needle.len();
-        if let Some(close) = lower[start..].find('\'') {
-            if lower[start + close..].starts_with("' was thrown") {
-                return true;
-            }
-        }
-        from = from + pos + 1;
+    /// Starts building a client. Only the credentials are required.
+    pub fn builder() -> ClientBuilder {
+        ClientBuilder::default()
     }
-    false
-}
 
-/// `preg_replace('/^Dna\s+/', '', $s)`.
-fn strip_dna_prefix(s: &str) -> &str {
-    if let Some(rest) = s.strip_prefix("Dna") {
-        let trimmed = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
-        if trimmed.len() < rest.len() {
-            return trimmed;
-        }
+    /// Creates a client from the environment variables the `dna` CLI reads: `DNA_RESELLER_ID`, `DNA_API_KEY`,
+    /// `DNA_ENV` (`production` or `ote`) or `DNA_TEST_MODE` (`true` for OTE), `DNA_BASE_URL` and `DNA_READ_ONLY`.
+    /// Use [`ClientBuilder::from_env`] to change other settings as well.
+    pub fn from_env() -> Result<Client, Error> {
+        ClientBuilder::from_env()?.build()
     }
-    s
-}
 
-/// php-dna `setError()`.
-pub(crate) fn set_error(code: Value, message: Value, details: Value) -> Value {
-    let code_str = php::strval(&code);
-    if let Some((c, m, d)) = DEFAULT_ERRORS.iter().find(|(c, _, _)| *c == code_str) {
-        let message = if php::trim(&php::strval(&message)).is_empty() {
-            json!(m)
-        } else {
-            message
-        };
-        let details = if php::trim(&php::strval(&details)).is_empty() {
-            json!(d)
-        } else {
-            details
-        };
-        return obj([
-            ("Code", json!(c)),
-            ("Message", message),
-            ("Details", details),
-        ]);
+    /// Returns the environment this client talks to.
+    pub fn environment(&self) -> Environment {
+        self.inner.environment
     }
-    obj([("Code", code), ("Message", message), ("Details", details)])
-}
 
-/// `setError()` with string arguments.
-pub(crate) fn set_error_str(code: &str, message: &str, details: &str) -> Value {
-    set_error(json!(code), json!(message), json!(details))
-}
-
-/// `['result' => 'ERROR', 'error' => setError(...)]` for local validation.
-pub(crate) fn local_error(code: &str, why: &str) -> Value {
-    obj([
-        ("result", json!(RESULT_ERROR)),
-        ("error", set_error_str(code, why, why)),
-    ])
-}
-
-/// Flatten the gateway's `validationErrors` into one readable string.
-pub(crate) fn flatten_validation_errors(errors: &Value) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for ve in php::values(errors) {
-        let part = match ve {
-            Value::String(s) => {
-                let t = php::trim(s);
-                if t.is_empty() {
-                    continue;
-                }
-                t.to_string()
-            }
-            Value::Array(_) | Value::Object(_) => {
-                let message = get(ve, "message")
-                    .map(|m| php::trim(&php::strval(m)).to_string())
-                    .unwrap_or_default();
-                let mut members = Vec::new();
-                if let Some(list @ (Value::Array(_) | Value::Object(_))) = get(ve, "members") {
-                    for member in php::values(list) {
-                        let label = humanize_validation_member(&php::strval(member));
-                        if !label.is_empty() {
-                            members.push(label);
-                        }
-                    }
-                }
-                if !members.is_empty() && !message.is_empty() {
-                    format!("{} - {}", members.join(", "), message)
-                } else if !members.is_empty() {
-                    members.join(", ")
-                } else if !message.is_empty() {
-                    message
-                } else {
-                    continue;
-                }
-            }
-            _ => continue,
-        };
-        if !parts.contains(&part) {
-            parts.push(part);
-        }
+    /// Returns the base address requests are sent to, without a trailing `/`.
+    pub fn base_url(&self) -> &str {
+        &self.inner.base_url
     }
-    parts.join(" | ")
-}
 
-/// `"$.administrativeContact.postalCode"` → `"Admin PostalCode"`.
-pub(crate) fn humanize_validation_member(member: &str) -> String {
-    let member = php::trim(member);
-    if member.is_empty() {
-        return String::new();
+    /// Returns whether the client blocks every request that is not a read.
+    pub fn is_read_only(&self) -> bool {
+        self.inner.read_only
     }
-    let member = member.trim_start_matches(['$', '.']);
-    // drop array indexes: \[\d+\]
-    let b = member.as_bytes();
-    let mut cleaned = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'[' {
-            let mut j = i + 1;
-            while j < b.len() && b[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > i + 1 && j < b.len() && b[j] == b']' {
-                i = j + 1;
-                continue;
-            }
-        }
-        cleaned.push(b[i]);
-        i += 1;
+
+    /// Returns the `User-Agent` header the client sends.
+    pub fn user_agent(&self) -> &str {
+        &self.inner.user_agent
     }
-    let cleaned = String::from_utf8_lossy(&cleaned).into_owned();
-    let out: Vec<String> = cleaned
-        .split(['.', '/'])
-        .filter(|s| !s.is_empty())
-        .map(|seg| match seg.to_ascii_lowercase().as_str() {
-            "administrativecontact" | "administrative" => "Admin".to_string(),
-            "technicalcontact" | "technical" => "Tech".to_string(),
-            "registrantcontact" | "registrant" => "Registrant".to_string(),
-            "billingcontact" | "billing" => "Billing".to_string(),
-            _ => php::ucfirst(seg),
+
+    /// Your account: balances, profile and the transaction ledger. CLI: `dna account`.
+    pub fn account(&self) -> crate::account::AccountClient<'_> {
+        crate::account::AccountClient::new(self)
+    }
+
+    /// Reusable contact handles and their verification. CLI: `dna contact`.
+    pub fn contacts(&self) -> crate::contacts::ContactsClient<'_> {
+        crate::contacts::ContactsClient::new(self)
+    }
+
+    /// Search, register, renew, transfer and manage domains, with URL forwarding, child nameservers and documents.
+    /// CLI: `dna domain`.
+    pub fn domains(&self) -> crate::domains::DomainsClient<'_> {
+        crate::domains::DomainsClient::new(self)
+    }
+
+    /// DNS zone records of domains on the platform nameservers. CLI: `dna dns`.
+    pub fn dns(&self) -> crate::dns::DnsClient<'_> {
+        crate::dns::DnsClient::new(self)
+    }
+
+    /// DNSSEC (DS records) of domains. CLI: `dna dnssec`.
+    pub fn dnssec(&self) -> crate::dnssec::DnssecClient<'_> {
+        crate::dnssec::DnssecClient::new(self)
+    }
+
+    /// SSL certificates: buy, configure, issue, list, renew, reissue and revoke. CLI: `dna ssl`.
+    pub fn ssl(&self) -> crate::ssl::SslClient<'_> {
+        crate::ssl::SslClient::new(self)
+    }
+
+    /// Web hosting packages and services. CLI: `dna hosting`.
+    pub fn hosting(&self) -> crate::hosting::HostingClient<'_> {
+        crate::hosting::HostingClient::new(self)
+    }
+
+    /// Orders. CLI: `dna order`.
+    pub fn orders(&self) -> crate::orders::OrdersClient<'_> {
+        crate::orders::OrdersClient::new(self)
+    }
+
+    /// The product catalogue and prices: TLDs, SSL certificates and other products. CLI: `dna product`.
+    pub fn products(&self) -> crate::products::ProductsClient<'_> {
+        crate::products::ProductsClient::new(self)
+    }
+
+    /// Validates a request, sends it and decodes the answer.
+    ///
+    /// Errors: [`ErrorKind::InvalidInput`] when the request failed its checks and [`ErrorKind::ReadOnly`] when the
+    /// client is read-only (nothing was sent in both cases); otherwise the API's error or a network failure.
+    pub async fn send<R: Request + ?Sized>(&self, request: &R) -> Result<R::Response, Error> {
+        self.send_with_response(request).await.map(|response| response.value)
+    }
+
+    /// Like [`send`](Client::send), and also returns the HTTP details: correlation ID, soft-quota state, number of
+    /// attempts and duration.
+    pub async fn send_with_response<R: Request + ?Sized>(&self, request: &R) -> Result<Response<R::Response>, Error> {
+        let prepared = self.prepare(request)?;
+        let exchange = self.execute(&prepared).await?;
+        let value = decode::<R::Response>(&prepared, &exchange)?;
+        Ok(Response {
+            value,
+            status: exchange.status,
+            correlation_id: exchange.correlation_id,
+            quota: exchange.quota,
+            attempts: exchange.attempts,
+            duration: exchange.duration,
         })
-        .collect();
-    out.join(" ").trim().to_string()
+    }
+
+    /// Pages through a list request and yields every item. A page is fetched only when the stream needs it. The
+    /// request's own skip is the starting point and its limit the page size ([`Paging::DEFAULT_PAGE_SIZE`] when not
+    /// set). The stream ends after the first error, which it yields.
+    ///
+    /// ```no_run
+    /// use domainnameapi::domains::DomainListRequest;
+    /// use futures_util::TryStreamExt;
+    ///
+    /// # async fn run(client: domainnameapi::Client) -> Result<(), domainnameapi::Error> {
+    /// let mut domains = client.list_all(DomainListRequest::new().domain_name("example"));
+    /// while let Some(domain) = domains.try_next().await? {
+    ///     println!("{} expires in {} days", domain.domain_name, domain.remaining_days);
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn list_all<T, R>(&self, request: R) -> BoxStream<'static, Result<T, Error>>
+    where
+        T: Send + 'static,
+        R: PagedRequest<T> + Send + Sync + 'static,
+    {
+        let page_size = request.paging().limit.filter(|n| *n > 0).unwrap_or(Paging::DEFAULT_PAGE_SIZE);
+        let state = PageState {
+            client: self.clone(),
+            skip: request.paging().skip.unwrap_or(0),
+            request,
+            page_size,
+            buffer: VecDeque::new(),
+            done: false,
+        };
+        stream::try_unfold(state, |mut state| async move {
+            loop {
+                if let Some(item) = state.buffer.pop_front() {
+                    return Ok(Some((item, state)));
+                }
+                if state.done {
+                    return Ok(None);
+                }
+                let mut request = state.request.clone();
+                {
+                    let paging = request.paging_mut();
+                    paging.skip = Some(state.skip);
+                    paging.limit = Some(state.page_size);
+                }
+                let page = state.client.send(&request).await?;
+                let count = page.items.len() as u32;
+                state.skip += count;
+                state.done = count == 0
+                    || (page.total_count > 0 && i64::from(state.skip) >= page.total_count)
+                    || (page.total_count <= 0 && count < state.page_size);
+                state.buffer.extend(page.items);
+            }
+        })
+        .boxed()
+    }
+
+    // ------------------------------------------------------------------------------------------------ transport
+
+    fn prepare<R: Request + ?Sized>(&self, request: &R) -> Result<Prepared, Error> {
+        let mut endpoint = request.endpoint();
+        if !endpoint.path.starts_with('/') {
+            endpoint.path.insert(0, '/');
+        }
+        let operation = endpoint.to_string();
+
+        let mut validator = Validator::new();
+        request.validate(&mut validator);
+        if !validator.is_valid() {
+            let errors = validator.into_errors();
+            let summary: Vec<String> = errors.iter().map(FieldError::to_string).collect();
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                codes::INVALID_INPUT,
+                format!("{operation} was not sent: {}", summary.join("; ")),
+            )
+            .with_validation_errors(errors)
+            .with_operation(operation, endpoint.safety)
+            .fill_hint());
+        }
+
+        if self.inner.read_only && endpoint.safety != OperationSafety::Read {
+            return Err(Error::new(
+                ErrorKind::ReadOnly,
+                codes::READ_ONLY,
+                format!("{operation} is a {} operation and the client is read-only; nothing was sent", endpoint.safety),
+            )
+            .with_operation(operation, endpoint.safety)
+            .fill_hint());
+        }
+
+        let mut url = format!("{}{}", self.inner.base_url, endpoint.path);
+        let query = request.query();
+        if !query.is_empty() {
+            let encoded: Vec<String> =
+                query.pairs().iter().map(|(k, v)| format!("{}={}", encode(k), encode(v))).collect();
+            url.push('?');
+            url.push_str(&encoded.join("&"));
+        }
+        let body = request.body().map(|b| b.to_string());
+        Ok(Prepared { endpoint, operation, url, body })
+    }
+
+    async fn execute(&self, prepared: &Prepared) -> Result<Exchange, Error> {
+        let started = Instant::now();
+        let correlation_id = new_correlation_id();
+        let retry_safe = prepared.endpoint.is_retry_safe();
+        let safety = prepared.endpoint.safety;
+
+        let mut attempt: u32 = 1;
+        loop {
+            if let Some(pacer) = &self.inner.pacer {
+                pacer.wait(&prepared.endpoint.path).await;
+            }
+
+            let result = self.build(prepared, &correlation_id).send().await;
+            let response = match result {
+                Ok(response) => response,
+                Err(e) => {
+                    if retry_safe && attempt <= self.inner.max_retries {
+                        tokio::time::sleep(backoff(attempt)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(self.network_error(prepared, e, &correlation_id));
+                }
+            };
+
+            let status = response.status().as_u16();
+            let headers = Headers::from(response.headers());
+            let redirected = redirected_to_error_page(&prepared.url, response.url());
+            let text = match response.text().await {
+                Ok(text) => text,
+                Err(e) => {
+                    if retry_safe && attempt <= self.inner.max_retries {
+                        tokio::time::sleep(backoff(attempt)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(self.network_error(prepared, e, &correlation_id));
+                }
+            };
+            let response_id =
+                headers.get("x-correlation-id").filter(|s| !s.is_empty()).unwrap_or(&correlation_id).to_string();
+
+            if (200..300).contains(&status) && !redirected {
+                return Ok(Exchange {
+                    status,
+                    body: text,
+                    correlation_id: response_id,
+                    quota: quota(&headers),
+                    attempts: attempt,
+                    duration: started.elapsed(),
+                });
+            }
+
+            let retry = status == 429 || (retry_safe && matches!(status, 502..=504));
+            if retry && !redirected && attempt <= self.inner.max_retries {
+                let wait = retry_after(headers.get("retry-after"))
+                    .map(|d| d + Duration::from_millis(50))
+                    .unwrap_or_else(|| backoff(attempt));
+                if wait <= self.inner.max_retry_delay {
+                    tokio::time::sleep(wait).await;
+                    attempt += 1;
+                    continue;
+                }
+            }
+
+            return Err(api_error(status, redirected, &headers, &text)
+                .with_correlation_id(response_id)
+                .with_operation(prepared.operation.clone(), safety)
+                .fill_hint());
+        }
+    }
+
+    fn build(&self, prepared: &Prepared, correlation_id: &str) -> reqwest::RequestBuilder {
+        let method = match prepared.endpoint.method {
+            Method::Get => reqwest::Method::GET,
+            Method::Post => reqwest::Method::POST,
+            Method::Put => reqwest::Method::PUT,
+            Method::Delete => reqwest::Method::DELETE,
+            Method::Patch => reqwest::Method::PATCH,
+        };
+        let mut builder = self
+            .inner
+            .http
+            .request(method, &prepared.url)
+            .timeout(self.inner.timeout)
+            .header("Accept", "application/json")
+            .header("User-Agent", &self.inner.user_agent)
+            .header("X-API-KEY", &self.inner.api_key)
+            .header("__reseller", &self.inner.reseller_id)
+            .header("X-Correlation-ID", correlation_id);
+        if let Some(body) = &prepared.body {
+            builder = builder.header("Content-Type", "application/json; charset=utf-8").body(body.clone());
+        }
+        builder
+    }
+
+    fn network_error(&self, prepared: &Prepared, e: reqwest::Error, correlation_id: &str) -> Error {
+        let (kind, code, message) = if e.is_timeout() {
+            (
+                ErrorKind::Timeout,
+                codes::TIMEOUT,
+                format!("No answer from the API within {} s.", self.inner.timeout.as_secs_f64()),
+            )
+        } else {
+            (ErrorKind::Network, codes::NETWORK, format!("The request could not be completed: {}", describe(&e)))
+        };
+        Error::new(kind, code, message)
+            .with_correlation_id(correlation_id)
+            .with_operation(prepared.operation.clone(), prepared.endpoint.safety)
+            .with_source(e)
+            .fill_hint()
+    }
 }
 
-/// Gateway DomainStatus enum → label.
-fn domain_status_label(code: i64) -> Option<&'static str> {
-    Some(match code {
-        0 => "Active",
-        1 => "WaitingForRegistration",
-        2 => "WaitingForDocument",
-        3 => "WaitingForIncomingTransfer",
-        4 => "TransferredOut",
-        7 => "PendingDelete",
-        8 => "Deleted",
-        9 => "ConfirmationEmailSend",
-        11 => "WaitingForOutgoingTransfer",
-        12 => "PendingHold",
-        15 => "ModificationPending",
-        18 => "InCase",
-        19 => "PendingRestore",
-        _ => return None,
+/// Response headers with lower-case names.
+struct Headers(HashMap<String, String>);
+
+impl Headers {
+    fn get(&self, name: &str) -> Option<&str> {
+        self.0.get(name).map(String::as_str)
+    }
+}
+
+impl From<&reqwest::header::HeaderMap> for Headers {
+    fn from(map: &reqwest::header::HeaderMap) -> Headers {
+        let mut headers = HashMap::new();
+        for (name, value) in map {
+            if let Ok(value) = value.to_str() {
+                headers
+                    .entry(name.as_str().to_ascii_lowercase())
+                    .and_modify(|v: &mut String| {
+                        v.push_str(", ");
+                        v.push_str(value.trim());
+                    })
+                    .or_insert_with(|| value.trim().to_string());
+            }
+        }
+        Headers(headers)
+    }
+}
+
+struct Prepared {
+    endpoint: Endpoint,
+    operation: String,
+    url: String,
+    body: Option<String>,
+}
+
+struct Exchange {
+    status: u16,
+    body: String,
+    correlation_id: String,
+    quota: Option<Quota>,
+    attempts: u32,
+    duration: Duration,
+}
+
+struct PageState<R, T> {
+    client: Client,
+    request: R,
+    skip: u32,
+    page_size: u32,
+    buffer: VecDeque<T>,
+    done: bool,
+}
+
+fn decode<T: serde::de::DeserializeOwned>(prepared: &Prepared, exchange: &Exchange) -> Result<T, Error> {
+    let text = exchange.body.trim();
+    let error = |code: &str, message: String| {
+        Error::new(ErrorKind::Unknown, code, message)
+            .with_status(exchange.status)
+            .with_correlation_id(exchange.correlation_id.clone())
+            .with_response_body(&exchange.body)
+            .with_operation(prepared.operation.clone(), prepared.endpoint.safety)
+    };
+    if text.is_empty() || text == "null" {
+        // Operations without an answer decode `null` into `Empty`; anything else needed a body.
+        return serde_json::from_str::<T>("null").map_err(|_| {
+            error(codes::EMPTY_RESPONSE, format!("The API answered {} with an empty body.", prepared.operation))
+        });
+    }
+    serde_json::from_str::<T>(text).map_err(|e| {
+        error(codes::INVALID_RESPONSE, format!("The answer to {} could not be read: {e}", prepared.operation))
+            .with_source(e)
     })
 }
 
-/// php-dna `normalizeDomainStatus()`.
-pub(crate) fn normalize_domain_status(value: &Value) -> String {
-    if php::is_numeric(value) {
-        return domain_status_label(php::intval(value))
-            .map(str::to_string)
-            .unwrap_or_else(|| php::strval(value));
+/// Builds the error for a non-2xx answer (or a redirect to the gateway's error page).
+fn api_error(status: u16, redirected: bool, headers: &Headers, body: &str) -> Error {
+    // The multi-reseller middleware redirects to /Error/Suspend when the __reseller value is unknown, inactive or
+    // suspended in this environment.
+    if matches!(status, 301 | 302) || redirected {
+        return Error::new(
+            ErrorKind::Auth,
+            codes::INVALID_RESELLER,
+            "Authentication failed: the reseller ID is unknown, inactive or suspended in this environment.",
+        )
+        .with_status(status)
+        .with_response_body(body);
     }
-    php::strval(value)
-}
+    if status == 429 {
+        let wait = retry_after(headers.get("retry-after"));
+        let message = match wait {
+            Some(d) => format!("Rate limit exceeded; retry after {} s.", d.as_secs_f64()),
+            None => "Rate limit exceeded.".to_string(),
+        };
+        return Error::new(ErrorKind::RateLimited, codes::RATE_LIMITED, message)
+            .with_status(status)
+            .with_retry_after(wait)
+            .with_response_body(body);
+    }
 
-/// php-dna `formatApiDate()`.
-pub(crate) fn format_api_date(value: Option<&Value>) -> String {
-    match value {
-        None => String::new(),
-        Some(v) => {
-            let s = php::strval(v);
-            if s.is_empty() {
-                return String::new();
+    let mut code = String::new();
+    let mut message = String::new();
+    let mut details = String::new();
+    let mut fields = Vec::new();
+    let trimmed = body.trim();
+    if let Some(Value::Object(root)) =
+        trimmed.starts_with('{').then(|| serde_json::from_str::<Value>(trimmed).ok()).flatten()
+    {
+        // ABP wraps errors as {"error": {...}}; some endpoints answer with a flat object.
+        let error = match property(&root, "error") {
+            Some(Value::Object(inner)) => inner.clone(),
+            _ => root.clone(),
+        };
+        code = text(&error, "code");
+        message = text(&error, "message");
+        details = text(&error, "details");
+        if let Some(Value::Array(items)) = property(&error, "validationErrors") {
+            for item in items {
+                match item {
+                    Value::String(s) => fields.push(FieldError { field: String::new(), message: s.clone() }),
+                    Value::Object(o) => {
+                        let members: Vec<String> = match property(o, "members") {
+                            Some(Value::Array(m)) => m
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(|s| s.trim_start_matches("$.").to_string())
+                                .collect(),
+                            _ => Vec::new(),
+                        };
+                        fields.push(FieldError { field: members.join(","), message: text(o, "message") });
+                    }
+                    _ => {}
+                }
             }
-            php::strtotime(&s).map(php::format_date).unwrap_or_default()
         }
+    } else if !trimmed.is_empty() && !trimmed.starts_with('<') {
+        // 401 bodies are plain text; HTML error pages are dropped.
+        message = trimmed.to_string();
+    }
+
+    if status == 401 && code.is_empty() {
+        let lower = message.to_lowercase();
+        code = if lower.contains("api key is missing") {
+            codes::MISSING_API_KEY
+        } else if lower.contains("resellerid is missing") {
+            codes::MISSING_RESELLER_ID
+        } else if lower.contains("invalid api key") {
+            codes::INVALID_API_KEY
+        } else if lower.contains("authorisation") || lower.contains("authorization") {
+            codes::SUBRESELLER_NOT_ALLOWED
+        } else {
+            codes::UNAUTHORIZED
+        }
+        .to_string();
+    }
+
+    // Replace the generic .NET exception text, or an echoed error code, with the details.
+    if is_boilerplate(&message) || (!message.is_empty() && message == code) {
+        let d = details.trim();
+        let d = d.strip_prefix("Dna ").unwrap_or(d).trim();
+        message = if !d.is_empty() && !is_boilerplate(d) && d != code {
+            d.to_string()
+        } else {
+            format!("The operation could not be completed (error {code}).")
+        };
+    }
+    if code.is_empty() {
+        code = format!("HTTP_{status}");
+    }
+    if message.trim().is_empty() {
+        message = format!("HTTP {status} {}.", reason_phrase(status));
+    }
+
+    Error::new(ErrorKind::from_status(status), code, message)
+        .with_status(status)
+        .with_details((!details.is_empty()).then_some(details))
+        .with_validation_errors(fields)
+        .with_response_body(body)
+}
+
+fn is_boilerplate(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.find("exception of type '").is_some_and(|i| lower[i + 19..].contains("' was thrown"))
+}
+
+fn property<'v>(object: &'v serde_json::Map<String, Value>, name: &str) -> Option<&'v Value> {
+    object.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v)
+}
+
+fn text(object: &serde_json::Map<String, Value>, name: &str) -> String {
+    match property(object, name) {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::Bool(b)) => b.to_string(),
+        _ => String::new(),
     }
 }
 
-/// php-dna `remainingDaysFromDate()`.
-pub(crate) fn remaining_days_from_date(value: Option<&Value>) -> i64 {
-    let Some(v) = value else { return 0 };
-    let s = php::strval(v);
-    if s.is_empty() {
-        return 0;
-    }
-    match php::strtotime(&s) {
-        None => 0,
-        Some(ts) => (((ts - php::now()) as f64) / 86_400.0).ceil().max(0.0) as i64,
-    }
+fn reason_phrase(status: u16) -> &'static str {
+    reqwest::StatusCode::from_u16(status).ok().and_then(|s| s.canonical_reason()).unwrap_or("Unexpected Status")
 }
 
-/// php-dna `normalizeHostName()`.
-pub(crate) fn normalize_host_name(host: &str) -> String {
-    php::lower(php::trim(host).trim_end_matches('.'))
+fn quota(headers: &Headers) -> Option<Quota> {
+    if headers.get("x-quota-limit").is_none() && headers.get("x-quota-used").is_none() {
+        return None;
+    }
+    let number = |name: &str| headers.get(name).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+    Some(Quota {
+        scope: headers.get("x-quota-scope").unwrap_or_default().to_string(),
+        cost: number("x-quota-cost"),
+        used: number("x-quota-used"),
+        limit: number("x-quota-limit"),
+        delay_seconds: number("x-quota-delay"),
+        reset_seconds: number("x-quota-reset"),
+    })
 }
 
-/// php-dna `normalizeHostNameList()`: strings only, normalised, no empties
-/// or duplicates, order kept.
-pub(crate) fn normalize_host_name_list(hosts: &Value) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for host in php::values(hosts) {
-        if let Value::String(s) = host {
-            let n = normalize_host_name(s);
-            if !n.is_empty() && !out.contains(&n) {
-                out.push(n);
-            }
+/// Reads `Retry-After` as seconds or as an HTTP date.
+fn retry_after(value: Option<&str>) -> Option<Duration> {
+    let value = value?.trim();
+    if let Ok(seconds) = value.parse::<f64>() {
+        return (seconds.is_finite() && seconds >= 0.0).then(|| Duration::from_secs_f64(seconds));
+    }
+    let date = httpdate::parse_http_date(value).ok()?;
+    Some(date.duration_since(SystemTime::now()).unwrap_or(Duration::ZERO))
+}
+
+/// 500 ms, 1 s, 2 s, ... plus up to 250 ms of jitter.
+fn backoff(attempt: u32) -> Duration {
+    let base = 500u64 << attempt.saturating_sub(1).min(6);
+    Duration::from_millis(base + random_u64() % 250)
+}
+
+/// A custom `reqwest::Client` may follow redirects. The gateway redirects unknown or suspended resellers to
+/// /Error/Suspend, which then answers 200 with an HTML page; treat that as the redirect it was.
+fn redirected_to_error_page(requested: &str, final_url: &reqwest::Url) -> bool {
+    let requested_path = reqwest::Url::parse(requested).map(|u| u.path().to_string()).unwrap_or_default();
+    final_url.path() != requested_path && final_url.path().to_ascii_lowercase().contains("/error/")
+}
+
+fn describe(e: &reqwest::Error) -> String {
+    use std::error::Error as _;
+    let mut text = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        text.push_str(": ");
+        text.push_str(&s.to_string());
+        source = s.source();
+    }
+    text
+}
+
+/// Percent-encodes a query string key or value.
+fn encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
         }
     }
     out
 }
 
-fn ip_version(ip: &str) -> &'static str {
-    if ip.parse::<std::net::Ipv4Addr>().is_ok() {
-        "v4"
-    } else {
-        "v6"
+fn random_u64() -> u64 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut hasher = RandomState::new().build_hasher();
+    hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+    hasher.write_u128(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    hasher.finish()
+}
+
+/// 32 hexadecimal digits, sent as `X-Correlation-ID`. The gateway logs it.
+fn new_correlation_id() -> String {
+    format!("{:016x}{:016x}", random_u64(), random_u64())
+}
+
+// ------------------------------------------------------------------------------------------------ pacing
+
+/// Spaces requests per rate-limit class: 5 requests/second in general, 2/second for domain searches (which also count
+/// against the general budget) and one DNS zone call per second. Domain info and the TLD list are not limited.
+struct Pacer {
+    next: Mutex<HashMap<&'static str, Instant>>,
+}
+
+impl Pacer {
+    fn new() -> Pacer {
+        Pacer { next: Mutex::new(HashMap::new()) }
+    }
+
+    fn class(path: &str) -> Option<(&'static str, Duration)> {
+        let p = path.to_ascii_lowercase();
+        if p.starts_with("/api/v1/domains/zones") {
+            Some(("zones", Duration::from_secs(1)))
+        } else if p == "/api/v1/domains/search" || p == "/api/v1/domains/bulk-search" {
+            Some(("search", Duration::from_millis(500)))
+        } else if p == "/api/v1/domains/info" || p.starts_with("/api/v1/products/tlds") {
+            None
+        } else {
+            Some(("general", Duration::from_millis(200)))
+        }
+    }
+
+    async fn wait(&self, path: &str) {
+        let Some((class, gap)) = Pacer::class(path) else { return };
+        let slot = {
+            let mut next = self.next.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = Instant::now();
+            let slot = next.get(class).copied().filter(|t| *t > now).unwrap_or(now);
+            next.insert(class, slot + gap);
+            if class == "search" {
+                let general = next.get("general").copied().unwrap_or(now);
+                if general < slot + Duration::from_millis(200) {
+                    next.insert("general", slot + Duration::from_millis(200));
+                }
+            }
+            slot
+        };
+        tokio::time::sleep_until(slot.into()).await;
     }
 }
 
-impl DomainNameApi {
-    /// Creates a client.
+// ------------------------------------------------------------------------------------------------ builder
+
+/// Settings of a [`Client`]. Only the credentials are required; everything else has a sensible default.
+///
+/// ```
+/// use domainnameapi::{Client, Environment};
+/// use std::time::Duration;
+///
+/// let client = Client::builder()
+///     .credentials("reseller-id", "api-key")
+///     .environment(Environment::Ote)
+///     .timeout(Duration::from_secs(30))
+///     .read_only(true)
+///     .build()?;
+/// assert_eq!(client.base_url(), "https://ote.domainresellerapi.com");
+/// # Ok::<(), domainnameapi::Error>(())
+/// ```
+#[derive(Debug, Clone)]
+pub struct ClientBuilder {
+    reseller_id: String,
+    api_key: String,
+    environment: Environment,
+    base_url: Option<String>,
+    timeout: Duration,
+    max_retries: u32,
+    max_retry_delay: Duration,
+    pace_requests: bool,
+    read_only: bool,
+    user_agent: Option<String>,
+    http: Option<reqwest::Client>,
+}
+
+impl Default for ClientBuilder {
+    fn default() -> Self {
+        ClientBuilder {
+            reseller_id: String::new(),
+            api_key: String::new(),
+            environment: Environment::Production,
+            base_url: None,
+            timeout: Duration::from_secs(60),
+            max_retries: 2,
+            max_retry_delay: Duration::from_secs(30),
+            pace_requests: true,
+            read_only: false,
+            user_agent: None,
+            http: None,
+        }
+    }
+}
+
+impl ClientBuilder {
+    /// Returns a builder filled from the environment variables the Domain Name API tools share:
     ///
-    /// `reseller_id` is the Reseller ID (UUID) and `api_key` the API Key from
-    /// the panel's API Settings (panel login credentials do not work). Both
-    /// are trimmed. `test_mode` selects the OTE environment; it accepts a
-    /// `bool` or a string (see [`BoolFlag`]).
-    pub fn new(reseller_id: &str, api_key: &str, test_mode: impl BoolFlag) -> Self {
-        let test_mode = test_mode.into_flag();
-        Self {
-            reseller_id: php::trim(reseller_id).to_string(),
-            api_key: php::trim(api_key).to_string(),
-            service_url: if test_mode { URL_OTE } else { URL_PROD }.to_string(),
-            ssl_verify: true,
-            transport: Box::new(UreqTransport::new()),
-            telemetry: Telemetry::default(),
-            last_request: json!([]),
-            last_response: json!([]),
-            last_response_headers: json!([]),
-            last_parsed_response: json!([]),
-            last_function: String::new(),
-            transport_failed: false,
-            last_gateway_code: String::new(),
-            start_at: php::microtime(),
-            last_zone_request_at: None,
-            zone_min_interval: Duration::from_secs_f64(ZONE_MIN_INTERVAL),
+    /// | Variable | Meaning |
+    /// |---|---|
+    /// | `DNA_RESELLER_ID`, `DNA_API_KEY` | The credentials. |
+    /// | `DNA_ENV` | `production` or `ote` (also `prod`, `live`, `test`, `sandbox`). |
+    /// | `DNA_TEST_MODE` | `true`, `1`, `on` or `yes` selects OTE. Used when `DNA_ENV` is not set. |
+    /// | `DNA_BASE_URL` | An optional base address override. |
+    /// | `DNA_READ_ONLY` | `true`, `1`, `on` or `yes` turns on read-only mode. |
+    ///
+    /// Fails when `DNA_ENV` or `DNA_BASE_URL` cannot be read. Missing credentials are reported by
+    /// [`build`](ClientBuilder::build).
+    pub fn from_env() -> Result<ClientBuilder, Error> {
+        ClientBuilder::from_vars(|name| std::env::var(name).ok())
+    }
+
+    pub(crate) fn from_vars(var: impl Fn(&str) -> Option<String>) -> Result<ClientBuilder, Error> {
+        let get = |name: &str| var(name).map(|v| v.trim().to_string()).unwrap_or_default();
+        let mut builder = ClientBuilder::default().credentials(get("DNA_RESELLER_ID"), get("DNA_API_KEY"));
+
+        let mut env = get("DNA_ENV");
+        if env.is_empty() {
+            env = get("DNA_TEST_MODE");
         }
-    }
+        builder.environment = Environment::parse(&env)
+            .ok_or_else(|| Error::configuration(format!("DNA_ENV must be production or ote, not '{env}'.")))?;
 
-    // ------------------------------------------------------------------
-    // Settings
-    // ------------------------------------------------------------------
-
-    /// Replace the HTTP transport (tests, proxies, custom clients).
-    pub fn set_transport(&mut self, transport: Box<dyn Transport>) {
-        self.transport = transport;
-    }
-
-    /// Turn TLS certificate verification on or off (on by default). Only
-    /// switch it off on a host whose CA bundle cannot validate the gateway.
-    pub fn set_ssl_verification(&mut self, enabled: bool) {
-        self.ssl_verify = enabled;
-    }
-
-    /// Turn telemetry (error reports and performance samples) on or off.
-    /// On by default.
-    pub fn set_error_reporting_enabled(&mut self, enabled: bool) {
-        self.telemetry.enabled = enabled;
-    }
-
-    /// Send only the minimal telemetry payload: error code and message,
-    /// endpoint, timing, versions and reseller ID.
-    pub fn set_telemetry_minimal(&mut self, minimal: bool) {
-        self.telemetry.minimal = minimal;
-    }
-
-    /// Override the Sentry DSN used for telemetry (empty disables sending).
-    pub fn set_telemetry_dsn(&mut self, dsn: &str) {
-        self.telemetry.dsn = dsn.to_string();
-    }
-
-    /// Minimum gap between two `domains/zones*` calls (default one second;
-    /// the gateway answers HTTP 429 to bursts). Tests may set it to zero.
-    pub fn set_zone_min_interval(&mut self, interval: Duration) {
-        self.zone_min_interval = interval;
-    }
-
-    // ------------------------------------------------------------------
-    // Diagnostics
-    // ------------------------------------------------------------------
-
-    /// Last request: `{"url", "method", "payload"}`.
-    pub fn get_request_data(&self) -> Value {
-        self.last_request.clone()
-    }
-
-    /// Last decoded response body (or `{"raw_response": "<body>"}` when the
-    /// body was not JSON).
-    pub fn get_response_data(&self) -> Value {
-        self.last_response.clone()
-    }
-
-    /// Transfer info of the last response: `{"url", "http_code",
-    /// "total_time", "headers"}` (php-dna returns `curl_getinfo()`).
-    pub fn get_response_headers(&self) -> Value {
-        self.last_response_headers.clone()
-    }
-
-    /// Last parsed response: the decoded body on success, the error
-    /// envelope (`Code`, `Message`, `Details`) on failure.
-    pub fn get_parsed_response_data(&self) -> Value {
-        self.last_parsed_response.clone()
-    }
-
-    /// Last low-level operation, e.g. `request:GET domains/info`.
-    pub fn get_last_function(&self) -> String {
-        self.last_function.clone()
-    }
-
-    /// Gateway base URL in use.
-    pub fn get_service_url(&self) -> String {
-        self.service_url.clone()
-    }
-
-    /// Override the gateway base URL.
-    pub fn set_service_url(&mut self, url: &str) {
-        self.service_url = url.to_string();
-    }
-
-    // ------------------------------------------------------------------
-    // HTTP layer
-    // ------------------------------------------------------------------
-
-    fn pace_zone_request(&mut self, endpoint: &str) {
-        if !endpoint
-            .trim_start_matches('/')
-            .starts_with("domains/zones")
-        {
-            return;
+        let base_url = get("DNA_BASE_URL");
+        if !base_url.is_empty() {
+            check_base_url(&base_url)?;
+            builder.base_url = Some(base_url);
         }
-        if let Some(last) = self.last_zone_request_at {
-            let elapsed = last.elapsed();
-            if elapsed < self.zone_min_interval {
-                std::thread::sleep(self.zone_min_interval - elapsed);
+        builder.read_only = matches!(get("DNA_READ_ONLY").to_ascii_lowercase().as_str(), "true" | "1" | "on" | "yes");
+        Ok(builder)
+    }
+
+    /// Sets the credentials, sent with every request as the `__reseller` and `X-API-KEY` headers. Both come from the
+    /// reseller panel's API settings; production and OTE use different API keys. Surrounding spaces are removed.
+    pub fn credentials(mut self, reseller_id: impl Into<String>, api_key: impl Into<String>) -> Self {
+        self.reseller_id = reseller_id.into().trim().to_string();
+        self.api_key = api_key.into().trim().to_string();
+        self
+    }
+
+    /// Chooses the deployment. [`Environment::Production`] by default.
+    pub fn environment(mut self, environment: Environment) -> Self {
+        self.environment = environment;
+        self
+    }
+
+    /// Overrides the environment's base address, for example for a proxy or a local test server
+    /// (`http://127.0.0.1:8080`). A path prefix is kept.
+    pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = Some(base_url.into());
+        self
+    }
+
+    /// Sets the time limit of one attempt. 60 seconds by default. Keep it well above 5 seconds: when the soft quota
+    /// is exhausted the gateway delays answers by up to 5 seconds.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Sets how often a failed request is repeated. 2 by default; 0 turns retries off. 429 answers are always retried
+    /// (the gateway refused them before anything ran). Network errors and 502/503/504 answers are retried only for
+    /// reads and idempotent writes, so nothing is charged twice.
+    pub fn max_retries(mut self, max_retries: u32) -> Self {
+        self.max_retries = max_retries;
+        self
+    }
+
+    /// Sets the longest wait before a retry. A `Retry-After` longer than this is not waited for. 30 seconds by
+    /// default.
+    pub fn max_retry_delay(mut self, max_retry_delay: Duration) -> Self {
+        self.max_retry_delay = max_retry_delay;
+        self
+    }
+
+    /// Spaces requests to stay under the gateway's per-key rate limits: 5 requests/second in general, 2/second for
+    /// domain searches and 1/second for DNS zone calls. On by default.
+    pub fn pace_requests(mut self, pace_requests: bool) -> Self {
+        self.pace_requests = pace_requests;
+        self
+    }
+
+    /// Blocks every request that is not a read ([`OperationSafety::Read`]) before it is sent. Useful while exploring
+    /// the API, in reports and in dashboards. Off by default.
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Sets the `User-Agent` header. Defaults to [`DEFAULT_USER_AGENT`]. Put your product in it, for example
+    /// `"my-panel/1.4 DomainNameAPI-Rust/2.0.0"`, to help support find your requests. The API sits behind Cloudflare,
+    /// which rejects empty or generic agents.
+    pub fn user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        self.user_agent = Some(user_agent.into());
+        self
+    }
+
+    /// Uses your own `reqwest::Client`, for example with a proxy or custom TLS settings. The SDK's own client follows
+    /// no redirects; a client that does is still handled. The time limit of each attempt is set per request, so the
+    /// client's own timeout does not matter.
+    pub fn http_client(mut self, http: reqwest::Client) -> Self {
+        self.http = Some(http);
+        self
+    }
+
+    /// Creates the client.
+    ///
+    /// Fails with [`codes::NO_CREDENTIALS`] when the reseller ID or API key is empty, and with
+    /// [`codes::INVALID_CONFIGURATION`] for an invalid base address or timeout.
+    pub fn build(self) -> Result<Client, Error> {
+        if self.reseller_id.is_empty() || self.api_key.is_empty() {
+            return Err(Error::new(
+                ErrorKind::Auth,
+                codes::NO_CREDENTIALS,
+                "The reseller ID and API key are required: find both in the reseller panel under API settings.",
+            )
+            .fill_hint());
+        }
+        if self.timeout.is_zero() {
+            return Err(Error::configuration("The timeout must be positive."));
+        }
+        let base_url = match &self.base_url {
+            Some(url) => {
+                check_base_url(url)?;
+                url.trim().trim_end_matches('/').to_string()
             }
-        }
-        self.last_zone_request_at = Some(Instant::now());
-    }
-
-    fn call_context(&self) -> CallContext {
-        CallContext {
-            reseller_id: self.reseller_id.clone(),
-            last_request: self.last_request.clone(),
-            last_response: self.last_response.clone(),
-            last_parsed_response: self.last_parsed_response.clone(),
-            http_code: php::intval_or(get(&self.last_response_headers, "http_code"), 0),
-            operation: self.last_function.clone(),
-            service_url: self.service_url.clone(),
-            elapsed: php::microtime() - self.start_at,
-            minimal: self.telemetry.minimal,
-        }
-    }
-
-    pub(crate) fn report_error(&mut self, message: &str, code: i64) {
-        if !self.telemetry.enabled {
-            return;
-        }
-        let ctx = self.call_context();
-        self.telemetry.report_error(message, code, &ctx);
-    }
-
-    /// php-dna `DNARest::request()`.
-    pub(crate) fn request(&mut self, method: &str, endpoint: &str, data: &Value) -> ApiResult {
-        self.pace_zone_request(endpoint);
-        self.transport_failed = false;
-        self.last_gateway_code.clear();
-        self.start_at = php::microtime();
-        let operation_endpoint = endpoint.split('?').next().unwrap_or("");
-        self.last_function = format!("request:{method} {operation_endpoint}");
-
-        let mut url = format!("{}/{}", self.service_url, endpoint.trim_start_matches('/'));
-        self.last_request = obj([
-            ("url", json!(url)),
-            ("method", json!(method)),
-            ("payload", data.clone()),
-        ]);
-
-        let mut body = None;
-        if method == "GET" || method == "DELETE" {
-            if php::truthy(data) {
-                url.push('?');
-                url.push_str(&php::http_build_query(data));
-            }
-        } else {
-            body = Some(php::json_encode(data));
-        }
-
-        let request = HttpRequest {
-            method: method.to_string(),
-            url: url.clone(),
-            headers: vec![
-                ("Content-Type".into(), "application/json".into()),
-                ("Accept".into(), "application/json".into()),
-                ("X-API-KEY".into(), self.api_key.clone()),
-                ("__reseller".into(), self.reseller_id.clone()),
-                ("User-Agent".into(), USER_AGENT.into()),
-            ],
-            body,
-            timeout: Duration::from_secs(DEFAULT_TIMEOUT),
-            connect_timeout: Duration::from_secs(DEFAULT_CONNECT_TIMEOUT),
-            verify_tls: self.ssl_verify,
+            None => self.environment.base_url().to_string(),
         };
-
-        let started = Instant::now();
-        let result = self.transport.send(&request);
-        let total_time = started.elapsed().as_secs_f64();
-
-        let response = match result {
-            Err(err) => {
-                self.transport_failed = true;
-                self.last_response_headers = obj([
-                    ("url", json!(url)),
-                    ("http_code", json!(0)),
-                    ("total_time", json!(total_time)),
-                    ("headers", json!({})),
-                ]);
-                self.last_response = obj([("raw_response", json!(false))]);
-                let message = if err.code == 28 {
-                    format!(
-                        "Could not reach the DomainNameAPI service: the connection timed out. ({})",
-                        err.message
-                    )
-                } else {
-                    format!("Curl error during request: {}", err.message)
-                };
-                self.last_parsed_response =
-                    set_error_str(&format!("CURL_{}", err.code), &message, &message);
-                self.report_error(&message, err.code);
-                return Err(ApiError {
-                    code: err.code,
-                    message,
-                });
-            }
-            Ok(response) => response,
+        let http = match self.http {
+            Some(http) => http,
+            None => reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(self.timeout.min(Duration::from_secs(30)))
+                .build()
+                .map_err(|e| {
+                    Error::configuration(format!("The HTTP client could not be created: {e}")).with_source(e)
+                })?,
         };
-
-        let status = i64::from(response.status);
-        let raw_body = response.body;
-        let mut headers = Map::new();
-        for (k, v) in &response.headers {
-            headers.insert(k.clone(), json!(v));
-        }
-        let content_type = response
-            .headers
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-            .map(|(_, v)| json!(v))
-            .unwrap_or(Value::Null);
-        self.last_response_headers = obj([
-            ("url", json!(url)),
-            ("content_type", content_type),
-            ("http_code", json!(status)),
-            ("total_time", json!(total_time)),
-            ("headers", Value::Object(headers)),
-        ]);
-
-        let decoded: Value = serde_json::from_str(&raw_body).unwrap_or(Value::Null);
-        self.last_response = if decoded.is_null() {
-            obj([("raw_response", json!(raw_body))])
-        } else {
-            decoded.clone()
-        };
-
-        if (200..=299).contains(&status) {
-            self.last_parsed_response = decoded.clone();
-            let duration_ms = (php::microtime() - self.start_at) * 1000.0;
-            if self.telemetry.enabled {
-                let ctx = self.call_context();
-                let start = self.start_at;
-                self.telemetry.sample_success(duration_ms, start, &ctx);
-            }
-            return Ok(decoded);
-        }
-
-        let mut parsed = decoded;
-        if status == 301 || status == 302 {
-            parsed = json!({
-                "message": "Invalid API credentials",
-                "code": "CREDENTIALS",
-                "details": "Authentication failed. Check your API key and reseller ID."
-            });
-        }
-        let body_value = json!(raw_body);
-        let error_message_value = get(&parsed, "message")
-            .or_else(|| get_path(&parsed, &["error", "message"]))
-            .cloned()
-            .unwrap_or_else(|| body_value.clone());
-        let error_code = get(&parsed, "code")
-            .or_else(|| get_path(&parsed, &["error", "code"]))
-            .cloned()
-            .unwrap_or_else(|| json!(format!("HTTP_{status}")));
-        let api_details = get(&parsed, "details")
-            .or_else(|| get_path(&parsed, &["error", "details"]))
-            .cloned();
-        let mut error_details = api_details.clone().unwrap_or_else(|| body_value.clone());
-        if let Value::String(code) = &error_code {
-            if !code.is_empty() && !code.starts_with("HTTP_") && code != "CREDENTIALS" {
-                self.last_gateway_code = code.clone();
-            }
-        }
-
-        let mut error_message = php::strval(&error_message_value);
-        if php::trim(&error_message).is_empty() {
-            error_message = format!("HTTP {status} - {}", http_status_reason(status));
-            if php::trim(&php::strval(&error_details)).is_empty() {
-                error_details = json!(error_message);
-            }
-        }
-
-        let code_str = php::strval(&error_code);
-        if is_abp_boilerplate(&error_message) || error_message == code_str {
-            // Only the gateway's details field may replace the message; the raw
-            // response body is never user-facing text.
-            let details_str = php::strval(api_details.as_ref().unwrap_or(&Value::Null));
-            let details_clean = php::trim(strip_dna_prefix(&details_str)).to_string();
-            if !details_clean.is_empty()
-                && details_clean != error_message
-                && details_clean != code_str
-                && !is_abp_boilerplate(&details_clean)
-            {
-                error_message = details_clean;
-            } else {
-                error_message = format!(
-                    "The operation could not be completed by the registry (error: {code_str}). Please try again or contact support."
-                );
-            }
-        }
-
-        let validation = get_path(&parsed, &["error", "validationErrors"])
-            .or_else(|| get(&parsed, "validationErrors"));
-        if let Some(v) = validation {
-            if php::is_array(v) && php::truthy(v) {
-                let flattened = flatten_validation_errors(v);
-                if !flattened.is_empty() {
-                    error_details = json!(flattened);
-                }
-            }
-        }
-
-        self.last_parsed_response = set_error(error_code, json!(error_message), error_details);
-        self.report_error(&error_message, status);
-        Err(ApiError {
-            code: status,
-            message: error_message,
+        let user_agent = self
+            .user_agent
+            .map(|ua| ua.trim().to_string())
+            .filter(|ua| !ua.is_empty())
+            .unwrap_or_else(|| DEFAULT_USER_AGENT.to_string());
+        Ok(Client {
+            inner: Arc::new(Inner {
+                http,
+                reseller_id: self.reseller_id,
+                api_key: self.api_key,
+                environment: self.environment,
+                base_url,
+                timeout: self.timeout,
+                max_retries: self.max_retries,
+                max_retry_delay: self.max_retry_delay,
+                read_only: self.read_only,
+                user_agent,
+                pacer: self.pace_requests.then(Pacer::new),
+            }),
         })
     }
-
-    /// php-dna `formatErrorCode()`: `API_<status>`, or `CURL_<errno>` after a
-    /// transport failure.
-    pub(crate) fn format_error_code(&self, code: i64) -> String {
-        if self.transport_failed {
-            format!("CURL_{code}")
-        } else {
-            format!("API_{code}")
-        }
-    }
-
-    /// `setError()` for envelopes built from a failed request: an
-    /// `API_<status>` code also carries the gateway's own code as
-    /// `GatewayCode` when the gateway sent one.
-    pub(crate) fn api_error(&self, code: &str, message: Value, details: Value) -> Value {
-        let mut error = set_error(json!(code), message, details);
-        let is_api = code
-            .strip_prefix("API_")
-            .map(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-            .unwrap_or(false);
-        if is_api && !self.last_gateway_code.is_empty() {
-            error["GatewayCode"] = json!(self.last_gateway_code);
-        }
-        error
-    }
-
-    /// The `catch (Exception $e)` block shared by every public method.
-    pub(crate) fn error_envelope(&self, e: &ApiError, fallback: &str) -> Value {
-        let mut code = self.format_error_code(e.code);
-        if code.is_empty() {
-            code = fallback.to_string();
-        }
-        let details = get(&self.last_parsed_response, "Details")
-            .or_else(|| get(&self.last_response, "raw_response"))
-            .cloned()
-            .unwrap_or_else(|| json!(e.message));
-        obj([
-            ("result", json!(RESULT_ERROR)),
-            ("error", self.api_error(&code, json!(e.message), details)),
-        ])
-    }
-
-    /// php-dna `operationFailure()`: register, transfer and renew can answer
-    /// HTTP 200 with `{"success": false, "message": ...}`, which is a refusal.
-    fn operation_failure(response: &Value, code: &str) -> Option<Value> {
-        if response.get("success") != Some(&Value::Bool(false)) {
-            return None;
-        }
-        let mut message = php::trim(&php::strval_or(get(response, "message"), "")).to_string();
-        if message.is_empty() {
-            message = "The registry did not accept the request.".to_string();
-        }
-        Some(obj([
-            ("result", json!(RESULT_ERROR)),
-            ("error", set_error_str(code, &message, &message)),
-        ]))
-    }
-
-    // ------------------------------------------------------------------
-    // Account
-    // ------------------------------------------------------------------
-
-    /// Account details with USD and TRY balances.
-    pub fn get_reseller_details(&mut self) -> Value {
-        match self.request("GET", "deposit/accounts/me", &json!([])) {
-            Ok(response) => {
-                if get(&response, "resellerId").is_some() {
-                    let usd = php::number_format(
-                        php::floatval(get(&response, "usdBalance").unwrap_or(&json!(0))),
-                        2,
-                    );
-                    let tl = php::number_format(
-                        php::floatval(get(&response, "tryBalance").unwrap_or(&json!(0))),
-                        2,
-                    );
-                    obj([
-                        ("result", json!(RESULT_OK)),
-                        ("id", response["resellerId"].clone()),
-                        ("active", json!(true)),
-                        (
-                            "name",
-                            get(&response, "resellerName").cloned().unwrap_or(json!("")),
-                        ),
-                        ("balance", json!(usd)),
-                        ("currency", json!("USD")),
-                        ("symbol", json!("$")),
-                        (
-                            "balances",
-                            json!([
-                                {"balance": usd, "currency": "USD", "symbol": "$"},
-                                {"balance": tl, "currency": "TL", "symbol": "TL"}
-                            ]),
-                        ),
-                    ])
-                } else {
-                    obj([
-                        ("result", json!(RESULT_ERROR)),
-                        (
-                            "error",
-                            set_error_str(
-                                "CREDENTIALS",
-                                "Invalid response format",
-                                "Response does not contain required fields",
-                            ),
-                        ),
-                    ])
-                }
-            }
-            Err(e) => self.error_envelope(&e, "RESELLER_DETAILS"),
-        }
-    }
-
-    /// Balance in one currency (php-dna default `USD`, see
-    /// [`crate::DEFAULT_CURRENCY`]). The account reports `USD` and `TRY`
-    /// (`TL`); any other currency fails with `ErrorCode` `BALANCE`. Returns
-    /// the `OperationResult` envelope, not `result`/`data`.
-    pub fn get_current_balance(&mut self, currency: &str) -> Value {
-        let name = php::upper(currency);
-        let (id, label, symbol) = match name.as_str() {
-            "USD" => (2, "USD".to_string(), "$"),
-            "TRY" => (1, "TL".to_string(), "TL"),
-            "EUR" => (3, "EUR".to_string(), "€"),
-            "GBP" => (4, "GBP".to_string(), "£"),
-            _ => (0, name.clone(), ""),
-        };
-        match self.request("GET", "deposit/accounts/me", &json!({"currency": name})) {
-            Ok(response) => {
-                let key = format!("{}Balance", php::lower(currency));
-                let reported = response
-                    .as_object()
-                    .map(|m| m.contains_key(&key))
-                    .unwrap_or(false);
-                if !reported {
-                    // The account only reports USD and TRY balances.
-                    return obj([
-                        ("ErrorCode", json!("BALANCE")),
-                        (
-                            "OperationMessage",
-                            json!(format!(
-                                "No {name} balance is reported for this account. Available: USD, TRY."
-                            )),
-                        ),
-                        ("OperationResult", json!("FAILED")),
-                        ("Balance", json!("0.00")),
-                        ("CurrencyId", json!(id)),
-                        ("CurrencyInfo", Value::Null),
-                        ("CurrencyName", json!(label)),
-                        ("CurrencySymbol", json!(symbol)),
-                    ]);
-                }
-                let balance = php::floatval(get(&response, &key).unwrap_or(&json!(0)));
-                obj([
-                    ("ErrorCode", json!(0)),
-                    ("OperationMessage", json!("Command completed succesfully.")),
-                    ("OperationResult", json!("SUCCESS")),
-                    ("Balance", json!(php::number_format(balance, 2))),
-                    ("CurrencyId", json!(id)),
-                    ("CurrencyInfo", Value::Null),
-                    ("CurrencyName", json!(label)),
-                    ("CurrencySymbol", json!(symbol)),
-                ])
-            }
-            Err(e) => {
-                let code = self.format_error_code(e.code);
-                obj([
-                    (
-                        "ErrorCode",
-                        json!(if code.is_empty() {
-                            "BALANCE".to_string()
-                        } else {
-                            code
-                        }),
-                    ),
-                    ("OperationMessage", json!(e.message)),
-                    ("OperationResult", json!("FAILED")),
-                    ("Balance", json!("0.00")),
-                    ("CurrencyId", json!(id)),
-                    ("CurrencyInfo", Value::Null),
-                    ("CurrencyName", json!(label)),
-                    ("CurrencySymbol", json!(symbol)),
-                ])
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Search and lists
-    // ------------------------------------------------------------------
-
-    /// Availability of every `domain × extension` pair. On success returns a
-    /// bare list of results (php-dna shape); on failure the error envelope.
-    /// `command` is php-dna's `$command` (default `"create"`).
-    pub fn check_availability<D, E>(
-        &mut self,
-        domains: D,
-        extensions: E,
-        period: i64,
-        command: &str,
-    ) -> Value
-    where
-        D: IntoIterator,
-        D::Item: AsRef<str>,
-        E: IntoIterator,
-        E::Item: AsRef<str>,
-    {
-        let extensions: Vec<String> = extensions
-            .into_iter()
-            .map(|e| e.as_ref().to_string())
-            .collect();
-        let mut queries = Vec::new();
-        for domain in domains {
-            for tld in &extensions {
-                queries.push(json!({"domainName": format!("{}.{}", domain.as_ref(), tld.trim_start_matches('.'))}));
-            }
-        }
-        if queries.is_empty() {
-            return obj([
-                ("result", json!(RESULT_ERROR)),
-                (
-                    "error",
-                    set_error_str(
-                        "AVAILABILITY",
-                        "Domain names not found.",
-                        "No domain names provided for availability check",
-                    ),
-                ),
-            ]);
-        }
-        let response = match self.request("POST", "domains/bulk-search", &Value::Array(queries)) {
-            Ok(r) => r,
-            Err(e) => return self.error_envelope(&e, "AVAILABILITY"),
-        };
-        let items = get(&response, "infos").unwrap_or(&response);
-        let mut out = Vec::new();
-        for item in php::values(items) {
-            if !php::is_array(item) {
-                continue;
-            }
-            let tld = match get(item, "tld") {
-                Some(t) => php::lower(&php::strval(t)),
-                None => {
-                    let name = php::strval_or(get(item, "domainName"), "");
-                    php::lower(name.rfind('.').map(|i| &name[i + 1..]).unwrap_or(""))
-                }
-            };
-            let raw = php::strval_or(get(item, "domainName"), "");
-            // Strip only the trailing ".tld" ("my.company.com" -> "my.company").
-            let lower = php::lower(&raw);
-            let suffix = format!(".{tld}");
-            let domain_name = if !tld.is_empty() && lower.ends_with(&suffix) {
-                lower[..lower.len() - suffix.len()].to_string()
-            } else {
-                lower
-            };
-            let status = php::lower(&php::strval_or(get(item, "status"), ""));
-            let available = matches!(status.as_str(), "available" | "1" | "true");
-            out.push(obj([
-                ("TLD", json!(tld)),
-                ("DomainName", json!(domain_name)),
-                (
-                    "Status",
-                    json!(if available {
-                        "available"
-                    } else {
-                        "notavailable"
-                    }),
-                ),
-                ("Command", json!(command)),
-                (
-                    "Period",
-                    get(item, "period").cloned().unwrap_or(json!(period)),
-                ),
-                (
-                    "IsFee",
-                    get(item, "isPremium").cloned().unwrap_or(json!(false)),
-                ),
-                (
-                    "Price",
-                    get(item, "price")
-                        .map(|p| json!(php::number_format(php::floatval(p), 4)))
-                        .unwrap_or(Value::Null),
-                ),
-                (
-                    "Currency",
-                    get(item, "currency").cloned().unwrap_or(Value::Null),
-                ),
-                (
-                    "Reason",
-                    get(item, "reason").cloned().unwrap_or(Value::Null),
-                ),
-            ]));
-        }
-        Value::Array(out)
-    }
-
-    /// Domains in the account. `extra_parameters` is a map of filters
-    /// (`PageSize`, `PageNumber` (0-based), `OrderColumn`, `OrderDirection`,
-    /// `DomainName`, ... or the gateway's `MaxResultCount`/`SkipCount`/
-    /// `Sorting`). Pass `&json!({})` for php-dna's default.
-    pub fn get_list(&mut self, extra_parameters: &Value) -> Value {
-        let mut extra = match extra_parameters {
-            Value::Object(map) => map.clone(),
-            Value::Array(list) => list
-                .iter()
-                .enumerate()
-                .map(|(i, v)| (i.to_string(), v.clone()))
-                .collect(),
-            _ => Map::new(),
-        };
-        let page_size = extra.get("PageSize").filter(|v| !v.is_null()).cloned();
-        let page_number = extra.get("PageNumber").filter(|v| !v.is_null()).cloned();
-        if let Some(ps) = &page_size {
-            extra.insert("MaxResultCount".into(), json!(php::intval(ps)));
-        }
-        if let Some(pn) = &page_number {
-            let size = page_size.as_ref().map(php::intval).unwrap_or(200);
-            extra.insert("SkipCount".into(), json!(php::intval(pn) * size));
-        }
-        if let Some(col) = extra.get("OrderColumn").filter(|v| !v.is_null()).cloned() {
-            let dir = php::upper(&php::strval_or(
-                extra.get("OrderDirection").filter(|v| !v.is_null()),
-                "ASC",
-            ));
-            let dir = if dir == "DESC" { "DESC" } else { "ASC" };
-            extra.insert(
-                "Sorting".into(),
-                json!(format!("{} {dir}", php::strval(&col))),
-            );
-        }
-        for k in ["PageNumber", "PageSize", "OrderColumn", "OrderDirection"] {
-            extra.shift_remove(k);
-        }
-        let mut params = Map::new();
-        params.insert("MaxResultCount".into(), json!(200));
-        params.insert("SkipCount".into(), json!(0));
-        for (k, v) in extra {
-            params.insert(k, v);
-        }
-
-        let response = match self.request("GET", "domains", &Value::Object(params)) {
-            Ok(r) => r,
-            Err(e) => return self.error_envelope(&e, "DOMAIN_LIST"),
-        };
-        let domains: Vec<Value> = match get(&response, "items") {
-            Some(items) => php::values(items).into_iter().map(list_item).collect(),
-            None => Vec::new(),
-        };
-        obj([
-            ("data", obj([("Domains", Value::Array(domains))])),
-            ("result", json!(RESULT_OK)),
-            (
-                "TotalCount",
-                json!(php::intval_or(get(&response, "totalCount"), 0)),
-            ),
-        ])
-    }
-
-    /// TLD list with pricing. php-dna default `count` is 20
-    /// ([`crate::DEFAULT_TLD_COUNT`]).
-    pub fn get_tld_list(&mut self, count: i64) -> Value {
-        let response = match self.request(
-            "GET",
-            "products/tlds",
-            &json!({"MaxResultCount": count, "SkipCount": 0}),
-        ) {
-            Ok(r) => r,
-            Err(e) => return self.error_envelope(&e, "TLD_LIST"),
-        };
-        let mut data = Vec::new();
-        let mut id = 1;
-        if let Some(items @ (Value::Array(_) | Value::Object(_))) = get(&response, "items") {
-            for tld in php::values(items) {
-                data.push(tld_entry(tld, id));
-                id += 1;
-            }
-        }
-        obj([("data", Value::Array(data)), ("result", json!(RESULT_OK))])
-    }
-
-    // ------------------------------------------------------------------
-    // Domain
-    // ------------------------------------------------------------------
-
-    /// Domain details.
-    pub fn get_details(&mut self, domain_name: &str) -> Value {
-        match self.request("GET", "domains/info", &json!({"DomainName": domain_name})) {
-            Ok(r) => parse_domain_info(&r),
-            Err(e) => self.error_envelope(&e, "DOMAIN_DETAILS"),
-        }
-    }
-
-    /// Re-read the domain from the registry (same result as `get_details`).
-    pub fn sync_from_registry(&mut self, domain_name: &str) -> Value {
-        self.get_details(domain_name)
-    }
-
-    /// Replace the nameservers. `name_servers` is a list or a map (values
-    /// are used), e.g. `&json!(["ns1.example.com", "ns2.example.com"])`.
-    pub fn modify_name_server(&mut self, domain_name: &str, name_servers: &Value) -> Value {
-        let payload = json!({
-            "domainName": domain_name,
-            "nameServers": normalize_host_name_list(name_servers),
-        });
-        match self.request("PUT", "domains/dns/name-server", &payload) {
-            Ok(r) => obj([
-                ("result", json!(RESULT_OK)),
-                (
-                    "data",
-                    obj([(
-                        "NameServers",
-                        // The gateway rarely echoes the list; report the
-                        // normalised list that was sent.
-                        get(&r, "nameServers")
-                            .cloned()
-                            .unwrap_or_else(|| payload["nameServers"].clone()),
-                    )]),
-                ),
-            ]),
-            Err(e) => self.error_envelope(&e, "MODIFY_NS"),
-        }
-    }
-
-    /// Turn the registrar (theft protection) lock on.
-    pub fn enable_theft_protection_lock(&mut self, domain_name: &str) -> Value {
-        match self.request("POST", "domains/lock", &json!({"domainName": domain_name})) {
-            Ok(_) => obj([
-                ("result", json!(RESULT_OK)),
-                ("data", json!({"LockStatus": true})),
-            ]),
-            Err(e) => self.error_envelope(&e, "ENABLE_LOCK"),
-        }
-    }
-
-    /// Turn the registrar (theft protection) lock off.
-    pub fn disable_theft_protection_lock(&mut self, domain_name: &str) -> Value {
-        match self.request(
-            "POST",
-            "domains/unlock",
-            &json!({"domainName": domain_name}),
-        ) {
-            Ok(_) => obj([
-                ("result", json!(RESULT_OK)),
-                ("data", json!({"LockStatus": false})),
-            ]),
-            Err(e) => self.error_envelope(&e, "DISABLE_LOCK"),
-        }
-    }
-
-    /// Turn privacy protection on or off. `status` is a `bool` or a panel
-    /// value (`"1"`, `"on"`, `"true"`, `"yes"`, `1` mean on; see
-    /// [`BoolFlag`]). `reason` (php-dna default [`crate::DEFAULT_REASON`]) is
-    /// kept for signature parity only: the gateway has no reason field, so
-    /// it is not sent.
-    pub fn modify_privacy_protection_status(
-        &mut self,
-        domain_name: &str,
-        status: impl BoolFlag,
-        reason: &str,
-    ) -> Value {
-        let _ = reason;
-        let status = status.into_flag();
-        let payload = json!({"domainName": domain_name, "privacyStatus": status});
-        match self.request("POST", "domains/privacy", &payload) {
-            Ok(_) => obj([
-                ("data", json!({"PrivacyProtectionStatus": status})),
-                ("result", json!(RESULT_OK)),
-            ]),
-            Err(e) => self.error_envelope(&e, "MODIFY_PRIVACY"),
-        }
-    }
-
-    /// Renew for `period` years.
-    pub fn renew(&mut self, domain_name: &str, period: i64) -> Value {
-        let payload = json!({"domainName": domain_name, "period": period});
-        match self.request("POST", "domains/renew", &payload) {
-            Ok(r) => {
-                if let Some(failed) = Self::operation_failure(&r, "RENEW_DOMAIN") {
-                    return failed;
-                }
-                if php::truthy(get(&r, "expirationDate").unwrap_or(&json!(false))) {
-                    obj([
-                        ("result", json!(RESULT_OK)),
-                        (
-                            "data",
-                            obj([(
-                                "ExpirationDate",
-                                json!(format_api_date(get(&r, "expirationDate"))),
-                            )]),
-                        ),
-                    ])
-                } else {
-                    let (_, _, description) = DEFAULT_ERRORS[12];
-                    self.report_error(&format!("[DOMAIN_RENEW] {description}"), 0);
-                    obj([
-                        ("result", json!(RESULT_ERROR)),
-                        ("error", set_error_str("DOMAIN_RENEW", "", "")),
-                    ])
-                }
-            }
-            Err(e) => self.error_envelope(&e, "RENEW_DOMAIN"),
-        }
-    }
-
-    /// Register a domain with full contact information (php-dna argument
-    /// order). `contacts` maps `Administrative`, `Billing`, `Technical`,
-    /// `Registrant` to contact maps; `name_servers` may be empty for the
-    /// defaults; `additional_attributes` carries TRABIS fields for `.tr`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn register_with_contact_info(
-        &mut self,
-        domain_name: &str,
-        period: i64,
-        contacts: &Value,
-        name_servers: &Value,
-        epp_lock: bool,
-        privacy_lock: bool,
-        additional_attributes: &Value,
-    ) -> Value {
-        let payload_contacts: Vec<Value> = php::entries(contacts)
-            .into_iter()
-            .map(|(kind, details)| {
-                crate::contacts::parse_contact(details, &php::ucfirst(&php::lower(&kind)))
-            })
-            .collect();
-        let mut ns = normalize_host_name_list(name_servers);
-        if ns.is_empty() {
-            ns = DEFAULT_NAMESERVERS.iter().map(|s| s.to_string()).collect();
-        }
-        let mut attrs = php::to_array(additional_attributes);
-        if php::lower(domain_name).ends_with(".tr") {
-            attrs = crate::contacts::normalize_tr_attributes(&attrs);
-        }
-        let attrs = crate::contacts::stringify_attributes(&attrs);
-        let payload = obj([
-            ("domainName", json!(domain_name)),
-            ("period", json!(period)),
-            ("nameServers", json!(ns)),
-            ("isLocked", json!(epp_lock)),
-            ("privacyEnabled", json!(privacy_lock)),
-            ("contacts", Value::Array(payload_contacts)),
-            ("tldAttributes", Value::Object(attrs)),
-        ]);
-        match self.request("POST", "domains/register-with-contacts", &payload) {
-            Ok(r) => Self::operation_failure(&r, "REGISTER_DOMAIN")
-                .unwrap_or_else(|| parse_domain_info(&r)),
-            Err(e) => self.error_envelope(&e, "REGISTER_DOMAIN"),
-        }
-    }
-
-    /// [`register_with_contact_info`](Self::register_with_contact_info) with
-    /// the optional arguments in a [`RegisterOptions`]
-    /// (`RegisterOptions::default()` = php-dna defaults).
-    pub fn register_with_contact_info_opts(
-        &mut self,
-        domain_name: &str,
-        period: i64,
-        contacts: &Value,
-        options: &RegisterOptions,
-    ) -> Value {
-        self.register_with_contact_info(
-            domain_name,
-            period,
-            contacts,
-            &options.name_servers,
-            options.epp_lock,
-            options.privacy_lock,
-            &options.additional_attributes,
-        )
-    }
-
-    // ------------------------------------------------------------------
-    // Child nameservers
-    // ------------------------------------------------------------------
-
-    /// Create a child nameserver (glue record).
-    pub fn add_child_name_server(
-        &mut self,
-        domain_name: &str,
-        name_server: &str,
-        ip_address: &str,
-    ) -> Value {
-        let payload = json!({
-            "domainName": domain_name,
-            "hostName": normalize_host_name(name_server),
-            "ipAddresses": [{"ipAddress": ip_address, "ipVersion": ip_version(ip_address)}],
-        });
-        match self.request("POST", "domains/dns/host", &payload) {
-            Ok(_) => obj([
-                ("result", json!(RESULT_OK)),
-                (
-                    "data",
-                    json!({"NameServer": name_server, "IPAdresses": [ip_address]}),
-                ),
-            ]),
-            Err(e) => self.error_envelope(&e, "ADD_CHILD_NS"),
-        }
-    }
-
-    /// Delete a child nameserver.
-    pub fn delete_child_name_server(&mut self, domain_name: &str, name_server: &str) -> Value {
-        let payload =
-            json!({"domainName": domain_name, "hostName": normalize_host_name(name_server)});
-        match self.request("DELETE", "domains/dns/host", &payload) {
-            Ok(_) => obj([
-                ("result", json!(RESULT_OK)),
-                ("data", json!({"NameServer": name_server})),
-            ]),
-            Err(e) => self.error_envelope(&e, "DELETE_CHILD_NS"),
-        }
-    }
-
-    /// Change the IP address of a child nameserver.
-    pub fn modify_child_name_server(
-        &mut self,
-        domain_name: &str,
-        name_server: &str,
-        ip_address: &str,
-    ) -> Value {
-        let host = normalize_host_name(name_server);
-        let payload = json!({
-            "domainName": domain_name,
-            "hostName": host,
-            "newHostName": host,
-            "ipAddresses": [{"ipAddress": ip_address, "ipVersion": ip_version(ip_address)}],
-        });
-        match self.request("PUT", "domains/dns/host", &payload) {
-            Ok(r) => obj([
-                ("result", json!(RESULT_OK)),
-                (
-                    "data",
-                    obj([
-                        (
-                            "NameServer",
-                            get(&r, "hostName").cloned().unwrap_or(json!(host)),
-                        ),
-                        (
-                            "IPAdresses",
-                            get(&r, "ipAddresses")
-                                .cloned()
-                                .unwrap_or(json!([ip_address])),
-                        ),
-                    ]),
-                ),
-            ]),
-            Err(e) => self.error_envelope(&e, "MODIFY_CHILD_NS"),
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Contacts
-    // ------------------------------------------------------------------
-
-    /// The domain's contacts: `Administrative`, `Billing`, `Registrant`,
-    /// `Technical` (types matched case-insensitively), then any other type
-    /// the registry returned.
-    pub fn get_contacts(&mut self, domain_name: &str) -> Value {
-        let info = match self.request("GET", "domains/info", &json!({"DomainName": domain_name})) {
-            Ok(r) => r,
-            Err(e) => return self.error_envelope(&e, "GET_CONTACTS"),
-        };
-        let mut contacts = Map::new();
-        if let Some(list @ (Value::Array(_) | Value::Object(_))) = get(&info, "contacts") {
-            for item in php::values(list) {
-                if !php::is_array(item) {
-                    continue;
-                }
-                let api_type = php::lower(php::trim(&php::strval_or(get(item, "contactType"), "")));
-                let key = match api_type.as_str() {
-                    "admin" | "administrative" => "Administrative".to_string(),
-                    "billing" => "Billing".to_string(),
-                    "tech" | "technical" => "Technical".to_string(),
-                    "registrant" | "owner" => "Registrant".to_string(),
-                    other => php::ucfirst(other),
-                };
-                if key.is_empty() {
-                    continue;
-                }
-                let mut merged = match item {
-                    Value::Object(m) => m.clone(),
-                    _ => Map::new(),
-                };
-                merged.insert("type".into(), json!(key));
-                contacts.insert(
-                    key,
-                    crate::contacts::parse_contact_info(&Value::Object(merged)),
-                );
-            }
-        }
-        let mut ordered = Map::new();
-        for key in ["Administrative", "Billing", "Registrant", "Technical"] {
-            if let Some(c) = contacts.shift_remove(key) {
-                ordered.insert(key.to_string(), c);
-            }
-        }
-        for (key, c) in contacts {
-            ordered.insert(key, c);
-        }
-        obj([
-            ("data", obj([("contacts", php::assoc_or_empty(ordered))])),
-            ("result", json!(RESULT_OK)),
-        ])
-    }
-
-    /// Update the domain's contacts. `contacts` maps contact types to
-    /// contact maps (flat or nested shape).
-    pub fn save_contacts(&mut self, domain_name: &str, contacts: &Value) -> Value {
-        let payload_contacts: Vec<Value> = php::entries(contacts)
-            .into_iter()
-            .map(|(kind, details)| {
-                crate::contacts::parse_contact(details, &php::ucfirst(&php::lower(&kind)))
-            })
-            .collect();
-        let payload = json!({"domainName": domain_name, "contacts": payload_contacts});
-        match self.request("PUT", "domains/contacts/update", &payload) {
-            Ok(r) => {
-                let mut parsed = Map::new();
-                if let Some(list @ (Value::Array(_) | Value::Object(_))) = get(&r, "contacts") {
-                    for contact in php::values(list) {
-                        let key =
-                            php::ucfirst(&php::lower(&php::strval_or(get(contact, "type"), "")));
-                        parsed.insert(key, crate::contacts::parse_contact_info(contact));
-                    }
-                }
-                obj([
-                    ("result", json!(RESULT_OK)),
-                    ("data", obj([("contacts", php::assoc_or_empty(parsed))])),
-                ])
-            }
-            Err(e) => self.error_envelope(&e, "SAVE_CONTACTS"),
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Transfers
-    // ------------------------------------------------------------------
-
-    /// Start an incoming transfer with the EPP (auth) code.
-    ///
-    /// No contacts are ever sent: the registrar takes them over from the
-    /// losing registrar, so the request always carries `contacts: []`.
-    pub fn transfer(&mut self, domain_name: &str, epp_code: &str, period: i64) -> Value {
-        let payload = json!({
-            "domainName": domain_name,
-            "authCode": epp_code,
-            "period": period,
-            "contacts": [],
-        });
-        match self.request("POST", "domains/transfer", &payload) {
-            Ok(r) => Self::operation_failure(&r, "TRANSFER_DOMAIN")
-                .unwrap_or_else(|| parse_domain_info(&r)),
-            Err(e) => self.error_envelope(&e, "TRANSFER_DOMAIN"),
-        }
-    }
-
-    fn transfer_action(
-        &mut self,
-        domain_name: &str,
-        path: &str,
-        default_status: &str,
-        fallback: &str,
-    ) -> Value {
-        match self.request("POST", path, &json!({"domainName": domain_name})) {
-            Ok(r) => obj([
-                ("result", json!(RESULT_OK)),
-                (
-                    "data",
-                    obj([
-                        ("DomainName", json!(domain_name)),
-                        (
-                            "Status",
-                            get(&r, "status").cloned().unwrap_or(json!(default_status)),
-                        ),
-                    ]),
-                ),
-            ]),
-            Err(e) => self.error_envelope(&e, fallback),
-        }
-    }
-
-    /// Cancel a pending incoming transfer.
-    pub fn cancel_transfer(&mut self, domain_name: &str) -> Value {
-        self.transfer_action(
-            domain_name,
-            "domains/transfers/cancel",
-            "Cancelled",
-            "CANCEL_TRANSFER",
-        )
-    }
-
-    /// Approve a pending outgoing transfer.
-    pub fn approve_transfer(&mut self, domain_name: &str) -> Value {
-        self.transfer_action(
-            domain_name,
-            "domains/transfers/approve",
-            "Approved",
-            "APPROVE_TRANSFER",
-        )
-    }
-
-    /// Reject a pending outgoing transfer.
-    pub fn reject_transfer(&mut self, domain_name: &str) -> Value {
-        self.transfer_action(
-            domain_name,
-            "domains/transfers/reject",
-            "Rejected",
-            "REJECT_TRANSFER",
-        )
-    }
-
-    /// Check whether the domain can be transferred with this auth code.
-    /// `result` is OK only when the registry reports it transferable.
-    pub fn check_transfer(&mut self, domain_name: &str, auth_code: &str) -> Value {
-        let payload = json!({"domainName": domain_name, "authCode": auth_code});
-        let r = match self.request("POST", "domains/transfers/check", &payload) {
-            Ok(r) => r,
-            Err(e) => return self.error_envelope(&e, "CHECK_TRANSFER"),
-        };
-        let flag = |k: &str| json!(!php::empty(get(&r, k)));
-        let available = !php::empty(get(&r, "transferAvailabilityStatus"));
-        let mut envelope = obj([
-            (
-                "result",
-                json!(if available { RESULT_OK } else { RESULT_ERROR }),
-            ),
-            (
-                "data",
-                obj([
-                    ("TransferAvailabilityStatus", json!(available)),
-                    ("AuthCodeIsRequired", flag("authCodeIsRequired")),
-                    ("AuthCodeIsValid", flag("authCodeIsValid")),
-                    ("UserTransferRequired", flag("userTransferRequired")),
-                    ("TransferLock", flag("transferLock")),
-                    ("Message", json!(php::strval_or(get(&r, "message"), ""))),
-                    (
-                        "MessageKey",
-                        json!(php::strval_or(get(&r, "messageKey"), "")),
-                    ),
-                    (
-                        "Additional",
-                        get(&r, "additionalAttributes")
-                            .map(php::to_array)
-                            .unwrap_or(json!([])),
-                    ),
-                ]),
-            ),
-        ]);
-        if !available {
-            let message = get(&r, "message")
-                .cloned()
-                .unwrap_or(json!("Domain is not transferable"));
-            let details = get(&r, "messageKey")
-                .or_else(|| get(&r, "message"))
-                .cloned()
-                .unwrap_or(json!(""));
-            envelope["error"] = set_error(json!("TRANSFER_NOT_AVAILABLE"), message, details);
-        }
-        envelope
-    }
-
-    // ------------------------------------------------------------------
-    // Utilities (no network)
-    // ------------------------------------------------------------------
-
-    /// Whether the domain ends in `.tr`.
-    pub fn is_tr_tld(&self, domain: &str) -> bool {
-        let b = domain.as_bytes();
-        let tail = if b.len() >= 3 { &b[b.len() - 3..] } else { b };
-        tail.eq_ignore_ascii_case(b".tr")
-    }
-
-    /// Complete and normalise a contact the way registration does (names
-    /// sanitised, placeholders for missing fields, phone split into number
-    /// and country code, country as ISO code).
-    pub fn validate_contact(&self, contact: &Value) -> Value {
-        crate::contacts::validate_contact(contact)
-    }
 }
 
-/// One `domains` listing item → php-dna's domain shape.
-fn list_item(item: &Value) -> Value {
-    let status_code = get(item, "statusCode");
-    let status_text = get(item, "statusText");
-    let usable = |v: Option<&Value>| match v {
-        Some(v) => v.as_str() != Some("") && !php::is_numeric(v),
-        None => false,
-    };
-    let status = if usable(status_code) {
-        php::strval(status_code.unwrap_or(&Value::Null))
-    } else if usable(status_text) {
-        php::strval(status_text.unwrap_or(&Value::Null))
-    } else {
-        normalize_domain_status(get(item, "status").unwrap_or(&json!("")))
-    };
-    let empty_contact = || json!({"ID": ""});
-    obj([
-        ("ID", json!(php::intval_or(get(item, "id"), 0))),
-        ("Status", json!(status)),
-        (
-            "DomainName",
-            get(item, "domainName").cloned().unwrap_or(json!("")),
-        ),
-        (
-            "AuthCode",
-            get(item, "authCode").cloned().unwrap_or(json!("")),
-        ),
-        (
-            "LockStatus",
-            json!(if php::empty(get(item, "lockStatus")) {
-                "false"
-            } else {
-                "true"
-            }),
-        ),
-        (
-            "PrivacyProtectionStatus",
-            json!(if php::empty(get(item, "privacyProtectionStatus")) {
-                "false"
-            } else {
-                "true"
-            }),
-        ),
-        (
-            "IsChildNameServer",
-            json!(if php::empty(get(item, "hosts")) {
-                "false"
-            } else {
-                "true"
-            }),
-        ),
-        (
-            "Contacts",
-            obj([
-                ("Billing", empty_contact()),
-                ("Technical", empty_contact()),
-                ("Administrative", empty_contact()),
-                ("Registrant", empty_contact()),
-            ]),
-        ),
-        (
-            "Dates",
-            obj([
-                ("Start", json!(format_api_date(get(item, "startDate")))),
-                (
-                    "Expiration",
-                    json!(format_api_date(get(item, "expirationDate"))),
-                ),
-                (
-                    "RemainingDays",
-                    json!(php::intval_or(get(item, "remainingDay"), 0)),
-                ),
-            ]),
-        ),
-        (
-            "NameServers",
-            get(item, "nameServers").cloned().unwrap_or(json!([])),
-        ),
-        ("Additional", json!([])),
-        ("ChildNameServers", json!([])),
-    ])
-}
-
-/// One `products/tlds` item → php-dna's TLD shape.
-fn tld_entry(tld: &Value, id: i64) -> Value {
-    const PRICE_TYPES: [(&str, &str); 6] = [
-        ("register", "registration"),
-        ("renew", "renew"),
-        ("transfer", "transfer"),
-        ("restore", "restore"),
-        ("refund", "refund"),
-        ("backorder", "backorder"),
-    ];
-    let mut pricing: Map<String, Value> = Map::new();
-    let mut currencies: Map<String, Value> = Map::new();
-    let mut periods: Vec<(String, Vec<(i64, String)>)> = Vec::new();
-
-    let mut put = |out_type: &str, info: &Value, currencies: &mut Map<String, Value>| {
-        let mut period = php::intval_or(get(info, "period"), 1);
-        if period < 1 {
-            period = 1;
-        }
-        let price = get(info, "price")
-            .map(|p| php::number_format(php::floatval(p), 4))
-            .unwrap_or_else(|| "0.0000".to_string());
-        let entry = match periods.iter_mut().find(|(t, _)| t == out_type) {
-            Some(e) => e,
-            None => {
-                periods.push((out_type.to_string(), Vec::new()));
-                periods.last_mut().expect("just pushed")
-            }
-        };
-        match entry.1.iter_mut().find(|(p, _)| *p == period) {
-            Some(slot) => slot.1 = price,
-            None => entry.1.push((period, price)),
-        }
-        currencies.insert(
-            out_type.to_string(),
-            get(info, "currency").cloned().unwrap_or(json!("")),
-        );
-    };
-
-    if let Some(first @ (Value::Array(_) | Value::Object(_))) = get_path(tld, &["prices", "0"]) {
-        for (api_type, out_type) in PRICE_TYPES {
-            let Some(api_value) = get(first, api_type) else {
-                continue;
-            };
-            match api_value {
-                Value::Array(list) if get(api_value, "0").is_some() => {
-                    for info in list {
-                        if php::is_array(info) {
-                            put(out_type, info, &mut currencies);
-                        }
-                    }
-                }
-                Value::Array(_) | Value::Object(_) => put(out_type, api_value, &mut currencies),
-                _ => {}
-            }
-        }
+fn check_base_url(url: &str) -> Result<(), Error> {
+    match reqwest::Url::parse(url.trim()) {
+        Ok(u) if matches!(u.scheme(), "http" | "https") && u.host().is_some() => Ok(()),
+        _ => Err(Error::configuration(format!(
+            "The base address must be an absolute http(s) URL such as https://api.domainresellerapi.com, not '{url}'."
+        ))),
     }
-    for (out_type, mut list) in periods {
-        list.sort_by_key(|(p, _)| *p);
-        let mut map = Map::new();
-        for (p, price) in list {
-            map.insert(p.to_string(), json!(price));
-        }
-        pricing.insert(out_type, Value::Object(map));
-    }
-
-    obj([
-        ("id", json!(id)),
-        (
-            "status",
-            get(tld, "status").cloned().unwrap_or(json!("Active")),
-        ),
-        (
-            "maxchar",
-            get_path(tld, &["constraints", "maxLenght"])
-                .cloned()
-                .unwrap_or(json!(63)),
-        ),
-        (
-            "maxperiod",
-            get(tld, "maxRegistrationPeriod")
-                .cloned()
-                .unwrap_or(json!(10)),
-        ),
-        (
-            "minchar",
-            get_path(tld, &["constraints", "minLength"])
-                .cloned()
-                .unwrap_or(json!(1)),
-        ),
-        (
-            "minperiod",
-            get(tld, "minRegistrationPeriod")
-                .cloned()
-                .unwrap_or(json!(1)),
-        ),
-        ("tld", tld.get("name").cloned().unwrap_or(Value::Null)),
-        ("pricing", php::assoc_or_empty(pricing)),
-        ("currencies", php::assoc_or_empty(currencies)),
-    ])
-}
-
-/// php-dna `parseContactIds()`.
-fn parse_contact_ids(contacts: &Value) -> Value {
-    let mut result = Map::new();
-    for key in ["Billing", "Technical", "Administrative", "Registrant"] {
-        result.insert(key.to_string(), json!({"ID": 0}));
-    }
-    for c in php::values(contacts) {
-        let api_type = get(c, "ContactType")
-            .or_else(|| get(c, "contactType"))
-            .map(php::strval)
-            .unwrap_or_default();
-        let key = match api_type.as_str() {
-            "Billing" => "Billing",
-            "Tech" => "Technical",
-            "Admin" => "Administrative",
-            "Registrant" => "Registrant",
-            _ => continue,
-        };
-        let id = get(c, "handle")
-            .or_else(|| get(c, "id"))
-            .cloned()
-            .unwrap_or(json!(0));
-        result.insert(key.to_string(), obj([("ID", id)]));
-    }
-    Value::Object(result)
-}
-
-/// php-dna `parseDomainInfo()`.
-pub(crate) fn parse_domain_info(data: &Value) -> Value {
-    if !php::truthy(data) {
-        return obj([
-            ("result", json!(RESULT_ERROR)),
-            ("error", set_error_str("RESPONSE", "", "")),
-        ]);
-    }
-    let name_servers = match get(data, "nameservers") {
-        Some(Value::Array(list)) => {
-            Value::Array(list.iter().map(|v| json!(php::strval(v))).collect())
-        }
-        Some(Value::Object(map)) => Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), json!(php::strval(v))))
-                .collect(),
-        ),
-        _ => json!([]),
-    };
-    let child_name_servers = match get(data, "hosts") {
-        Some(hosts) => {
-            let mapped: Vec<(String, Value)> = php::entries(hosts)
-                .into_iter()
-                .map(|(k, ns)| {
-                    let ips: Vec<Value> = get(ns, "ipAddresses")
-                        .map(|list| {
-                            php::values(list)
-                                .into_iter()
-                                .map(|ip| ip.get("ipAddress").cloned().unwrap_or(Value::Null))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let ip = ips.last().cloned().unwrap_or(json!(""));
-                    (
-                        k,
-                        obj([
-                            ("ns", ns.get("name").cloned().unwrap_or(Value::Null)),
-                            ("ip", ip),
-                        ]),
-                    )
-                })
-                .collect();
-            if hosts.is_object() {
-                Value::Object(mapped.into_iter().collect())
-            } else {
-                Value::Array(mapped.into_iter().map(|(_, v)| v).collect())
-            }
-        }
-        None => json!([]),
-    };
-    let remaining = match get(data, "remainingDay") {
-        Some(v) => php::intval(v),
-        None => remaining_days_from_date(get(data, "expirationDate")),
-    };
-    let flag = |k: &str| {
-        json!(if php::empty(get(data, k)) {
-            "false"
-        } else {
-            "true"
-        })
-    };
-    obj([
-        (
-            "data",
-            obj([
-                ("ID", json!(php::intval_or(get(data, "id"), 0))),
-                (
-                    "Status",
-                    json!(normalize_domain_status(
-                        get(data, "status").unwrap_or(&json!(""))
-                    )),
-                ),
-                (
-                    "DomainName",
-                    json!(php::strval_or(
-                        get(data, "domainName").or_else(|| get(data, "name")),
-                        ""
-                    )),
-                ),
-                (
-                    "AuthCode",
-                    json!(php::strval_or(
-                        get(data, "authCode").or_else(|| get(data, "eppCode")),
-                        ""
-                    )),
-                ),
-                ("LockStatus", flag("lockStatus")),
-                ("PrivacyProtectionStatus", flag("privacyProtectionStatus")),
-                ("IsChildNameServer", flag("hosts")),
-                (
-                    "Contacts",
-                    parse_contact_ids(get(data, "contacts").unwrap_or(&json!([]))),
-                ),
-                (
-                    "Dates",
-                    obj([
-                        ("Start", json!(format_api_date(get(data, "startDate")))),
-                        (
-                            "Expiration",
-                            json!(format_api_date(get(data, "expirationDate"))),
-                        ),
-                        ("RemainingDays", json!(remaining)),
-                    ]),
-                ),
-                ("NameServers", name_servers),
-                (
-                    "Additional",
-                    get(data, "additionalAttributes")
-                        .map(php::to_array)
-                        .unwrap_or(json!([])),
-                ),
-                ("ChildNameServers", child_name_servers),
-            ]),
-        ),
-        ("result", json!(RESULT_OK)),
-    ])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
-    #[test]
-    fn humanizes_members() {
-        assert_eq!(
-            humanize_validation_member("$.administrativeContact.postalCode"),
-            "Admin PostalCode"
-        );
-        assert_eq!(
-            humanize_validation_member("$.tldAttributes.TRABISCOUNTRYID"),
-            "TldAttributes TRABISCOUNTRYID"
-        );
-        assert_eq!(
-            humanize_validation_member("$.contacts[0].phone"),
-            "Contacts Phone"
-        );
-        assert_eq!(humanize_validation_member("  "), "");
+    fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        move |name| map.get(name).cloned()
     }
 
     #[test]
-    fn flattens_validation_errors() {
-        let v = json!([
-            {"members": ["$.a.b", "$.c"], "message": "bad"},
-            {"members": [], "message": "plain"},
-            "loose",
-            {"members": ["$.a.b", "$.c"], "message": "bad"}
-        ]);
-        assert_eq!(
-            flatten_validation_errors(&v),
-            "A B, C - bad | plain | loose"
-        );
+    fn environments_parse() {
+        assert_eq!(Environment::parse("OTE"), Some(Environment::Ote));
+        assert_eq!(Environment::parse("true"), Some(Environment::Ote));
+        assert_eq!(Environment::parse(""), Some(Environment::Production));
+        assert_eq!(Environment::parse("live"), Some(Environment::Production));
+        assert_eq!(Environment::parse("staging"), None);
     }
 
     #[test]
-    fn detects_boilerplate() {
-        assert!(is_abp_boilerplate(
-            "Exception of type 'Volo.Abp.BusinessException' was thrown."
-        ));
-        assert!(is_abp_boilerplate("x EXCEPTION OF TYPE 'A' WAS THROWN"));
-        assert!(!is_abp_boilerplate("Exception of type Volo was thrown"));
-        assert_eq!(strip_dna_prefix("Dna  Host"), "Host");
-        assert_eq!(strip_dna_prefix("DnaHost"), "DnaHost");
+    fn builder_from_vars() {
+        let client = ClientBuilder::from_vars(vars(&[
+            ("DNA_RESELLER_ID", " id "),
+            ("DNA_API_KEY", "key"),
+            ("DNA_TEST_MODE", "1"),
+            ("DNA_READ_ONLY", "yes"),
+        ]))
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(client.environment(), Environment::Ote);
+        assert_eq!(client.base_url(), "https://ote.domainresellerapi.com");
+        assert!(client.is_read_only());
+
+        let client = ClientBuilder::from_vars(vars(&[
+            ("DNA_RESELLER_ID", "id"),
+            ("DNA_API_KEY", "key"),
+            ("DNA_ENV", "production"),
+            ("DNA_TEST_MODE", "true"),
+            ("DNA_BASE_URL", "http://127.0.0.1:9/prefix/"),
+        ]))
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(client.environment(), Environment::Production);
+        assert_eq!(client.base_url(), "http://127.0.0.1:9/prefix");
+        assert!(!client.is_read_only());
+
+        let e = ClientBuilder::from_vars(vars(&[("DNA_ENV", "staging")])).unwrap_err();
+        assert_eq!(e.code(), codes::INVALID_CONFIGURATION);
+        let e = ClientBuilder::from_vars(vars(&[("DNA_BASE_URL", "not a url")])).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::InvalidInput);
     }
 
     #[test]
-    fn statuses() {
-        assert_eq!(
-            normalize_domain_status(&json!(3)),
-            "WaitingForIncomingTransfer"
-        );
-        assert_eq!(normalize_domain_status(&json!("4")), "TransferredOut");
-        assert_eq!(normalize_domain_status(&json!(99)), "99");
-        assert_eq!(normalize_domain_status(&json!("Active")), "Active");
+    fn missing_credentials_fail_at_build() {
+        let e = ClientBuilder::from_vars(vars(&[])).unwrap().build().unwrap_err();
+        assert_eq!(e.code(), codes::NO_CREDENTIALS);
+        assert_eq!(e.kind(), ErrorKind::Auth);
+        assert!(e.hint().unwrap().contains("DNA_RESELLER_ID"));
     }
 
     #[test]
-    fn set_error_prefers_given_text_for_known_codes() {
-        let e = set_error_str("RESPONSE", "", "");
-        assert_eq!(
-            e["Message"],
-            "Invalid response received from server! Response is empty."
-        );
-        let e = set_error_str("CREDENTIALS", "Invalid response format", "x");
-        assert_eq!(e["Message"], "Invalid response format");
-        assert_eq!(e["Code"], "CREDENTIALS");
+    fn debug_hides_credentials() {
+        let client = Client::new("secret-id", "secret-key").unwrap();
+        let text = format!("{client:?}");
+        assert!(!text.contains("secret"));
+        assert!(text.contains("Production"));
     }
 
     #[test]
-    fn test_mode_strings() {
-        assert!(" Yes ".into_flag());
-        assert!("ON".into_flag());
-        assert!("1".into_flag());
-        assert!(!"false".into_flag());
-        assert!(!"off".into_flag());
-        assert!(!"".into_flag());
-        assert!(!"2".into_flag());
+    fn retry_after_reads_seconds_and_dates() {
+        assert_eq!(retry_after(Some("2")), Some(Duration::from_secs(2)));
+        assert_eq!(retry_after(Some("0.5")), Some(Duration::from_millis(500)));
+        assert_eq!(retry_after(Some("Wed, 21 Oct 2015 07:28:00 GMT")), Some(Duration::ZERO));
+        assert_eq!(retry_after(Some("soon")), None);
+        assert_eq!(retry_after(None), None);
+    }
+
+    #[test]
+    fn backoff_grows() {
+        let first = backoff(1);
+        assert!(first >= Duration::from_millis(500) && first < Duration::from_millis(750));
+        assert!(backoff(3) >= Duration::from_secs(2));
+    }
+
+    #[test]
+    fn pacing_classes() {
+        assert_eq!(Pacer::class("/api/v1/domains/zones/apply").unwrap().0, "zones");
+        assert_eq!(Pacer::class("/api/v1/domains/search").unwrap().0, "search");
+        assert!(Pacer::class("/api/v1/domains/info").is_none());
+        assert!(Pacer::class("/api/v1/products/tlds").is_none());
+        assert_eq!(Pacer::class("/api/v1/domains/renew").unwrap().0, "general");
+    }
+
+    #[test]
+    fn boilerplate_is_detected() {
+        assert!(is_boilerplate("Exception of type 'Volo.Abp.BusinessException' was thrown."));
+        assert!(!is_boilerplate("Domain not found"));
+    }
+
+    #[test]
+    fn correlation_ids_are_unique_hex() {
+        let a = new_correlation_id();
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, new_correlation_id());
+    }
+
+    #[test]
+    fn query_values_are_encoded() {
+        assert_eq!(encode("a b&c=d/é"), "a%20b%26c%3Dd%2F%C3%A9");
+        assert_eq!(encode("2026-01-01T00:00:00+00:00"), "2026-01-01T00%3A00%3A00%2B00%3A00");
     }
 }
