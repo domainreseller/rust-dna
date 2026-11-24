@@ -191,6 +191,7 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `pace_requests(...)` | `true` | Spaces requests to stay under the gateway's rate limits. |
 | `read_only(...)` | `false` | Blocks every request that is not a read, before it is sent. |
 | `user_agent(...)` | `DomainNameAPI-Rust/<version>` | The `User-Agent` header. |
+| `app(name, version)` | `rust`, the SDK version | The `X-App` and `X-Version` headers: the application that uses the SDK (see below). |
 | `http_client(...)` | the SDK's own | Your own `reqwest::Client` (proxy, TLS settings). |
 
 `from_env()` reads:
@@ -202,9 +203,26 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `DNA_TEST_MODE` | `true`, `1`, `on` or `yes` selects OTE. Used when `DNA_ENV` is not set. |
 | `DNA_BASE_URL` | Optional base address override. |
 | `DNA_READ_ONLY` | `true` turns on read-only mode. |
+| `DNA_APP`, `DNA_APP_VERSION` | The application that uses the SDK and its version, sent as `X-App` and `X-Version`. |
 
 `Client` is `Clone + Send + Sync` and cheap to clone (it holds an `Arc`). Create one per set of credentials and share
 it for the lifetime of the application: the rate-limit pacing is per client.
+
+### Identifying your application
+
+Every request carries the `X-App` and `X-Version` headers, which tell the API team which integration sent it. By
+default they are `rust` and the SDK version. If you build a panel module or another product on the SDK, set your own:
+
+```rust
+let client = Client::builder()
+    .credentials(reseller_id, api_key)
+    .app("WiseCP5", "V2.0.20-beta") // sent as X-App: wisecp5, X-Version: 2.0.20
+    .build()?;
+```
+
+The name is lower-cased and keeps only `a-z`, `0-9`, `.`, `_` and `-`; the version keeps only digits and dots. An
+empty name falls back to `rust`, an empty version to the SDK version. `from_env()` reads the same values from `DNA_APP`
+and `DNA_APP_VERSION`. The `User-Agent` header does not change.
 
 ## Usage
 

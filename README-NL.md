@@ -191,6 +191,7 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `pace_requests(...)` | `true` | Spreidt requests zodat je onder de rate limits van de gateway blijft. |
 | `read_only(...)` | `false` | Blokkeert elk request dat geen leesactie is, voordat het wordt verstuurd. |
 | `user_agent(...)` | `DomainNameAPI-Rust/<version>` | De `User-Agent`-header. |
+| `app(name, version)` | `rust`, de SDK-versie | De headers `X-App` en `X-Version`: de applicatie die de SDK gebruikt (zie hieronder). |
 | `http_client(...)` | die van de SDK zelf | Je eigen `reqwest::Client` (proxy, TLS-instellingen). |
 
 `from_env()` leest:
@@ -202,9 +203,27 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `DNA_TEST_MODE` | `true`, `1`, `on` of `yes` kiest OTE. Wordt gebruikt als `DNA_ENV` niet is ingesteld. |
 | `DNA_BASE_URL` | Optionele overschrijving van het basisadres. |
 | `DNA_READ_ONLY` | `true` zet de read-only modus aan. |
+| `DNA_APP`, `DNA_APP_VERSION` | De applicatie die de SDK gebruikt en haar versie, verstuurd als `X-App` en `X-Version`. |
 
 `Client` is `Clone + Send + Sync` en goedkoop om te klonen (hij bevat een `Arc`). Maak één client per set inloggegevens en
 deel die gedurende de hele levensduur van de applicatie: de pacing voor de rate limits geldt per client.
+
+### Je applicatie identificeren
+
+Elk verzoek bevat de headers `X-App` en `X-Version`, waaraan het API-team ziet welke integratie het heeft verstuurd.
+Standaard zijn dat `rust` en de SDK-versie. Bouw je een panelmodule of een ander product op de SDK, stel dan je eigen
+waarden in:
+
+```rust
+let client = Client::builder()
+    .credentials(reseller_id, api_key)
+    .app("WiseCP5", "V2.0.20-beta") // verstuurd als X-App: wisecp5, X-Version: 2.0.20
+    .build()?;
+```
+
+De naam wordt naar kleine letters omgezet en behoudt alleen `a-z`, `0-9`, `.`, `_` en `-`; de versie behoudt alleen
+cijfers en punten. Een lege naam valt terug op `rust`, een lege versie op de SDK-versie. `from_env()` leest dezelfde
+waarden uit `DNA_APP` en `DNA_APP_VERSION`. De `User-Agent`-header verandert niet.
 
 ## Gebruik
 

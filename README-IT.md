@@ -191,6 +191,7 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `pace_requests(...)` | `true` | Distanzia le richieste per restare entro i limiti di richieste del gateway. |
 | `read_only(...)` | `false` | Blocca, prima dell'invio, ogni richiesta che non sia una lettura. |
 | `user_agent(...)` | `DomainNameAPI-Rust/<version>` | L'header `User-Agent`. |
+| `app(name, version)` | `rust`, la versione dell'SDK | Gli header `X-App` e `X-Version`: l'applicazione che usa l'SDK (vedi sotto). |
 | `http_client(...)` | quello dell'SDK | Il tuo `reqwest::Client` (proxy, impostazioni TLS). |
 
 `from_env()` legge:
@@ -202,9 +203,27 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `DNA_TEST_MODE` | `true`, `1`, `on` o `yes` seleziona OTE. Usata quando `DNA_ENV` non è impostata. |
 | `DNA_BASE_URL` | Sostituzione facoltativa dell'indirizzo base. |
 | `DNA_READ_ONLY` | `true` attiva la modalità di sola lettura. |
+| `DNA_APP`, `DNA_APP_VERSION` | L'applicazione che usa l'SDK e la sua versione, inviate come `X-App` e `X-Version`. |
 
 `Client` è `Clone + Send + Sync` ed economico da clonare (contiene un `Arc`). Creane uno per ogni set di credenziali e
 condividilo per tutta la vita dell'applicazione: il distanziamento delle richieste è per singolo client.
+
+### Identificare la tua applicazione
+
+Ogni richiesta porta gli header `X-App` e `X-Version`, che indicano al team dell'API quale integrazione l'ha inviata.
+Per impostazione predefinita valgono `rust` e la versione dell'SDK. Se costruisci un modulo per un pannello o un altro
+prodotto sull'SDK, imposta i tuoi valori:
+
+```rust
+let client = Client::builder()
+    .credentials(reseller_id, api_key)
+    .app("WiseCP5", "V2.0.20-beta") // inviato come X-App: wisecp5, X-Version: 2.0.20
+    .build()?;
+```
+
+Il nome viene convertito in minuscolo e conserva solo `a-z`, `0-9`, `.`, `_` e `-`; la versione conserva solo cifre e
+punti. Un nome vuoto torna a `rust`, una versione vuota alla versione dell'SDK. `from_env()` legge gli stessi valori da
+`DNA_APP` e `DNA_APP_VERSION`. L'header `User-Agent` non cambia.
 
 ## Utilizzo
 
