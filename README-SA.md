@@ -221,6 +221,7 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `pace_requests(...)` | `true` | يوزّع الطلبات زمنيًا لتبقى ضمن حدود معدل الطلبات في البوابة (gateway). |
 | `read_only(...)` | `false` | يمنع كل طلب ليس قراءةً، قبل إرساله. |
 | `user_agent(...)` | `DomainNameAPI-Rust/<version>` | ترويسة `User-Agent`. |
+| `app(name, version)` | `rust`، إصدار الحزمة | الترويستان `X-App` و`X-Version`: التطبيق الذي يستخدم الحزمة (انظر أدناه). |
 | `http_client(...)` | العميل الخاص بالحزمة | `reqwest::Client` الخاص بك (وكيل، إعدادات TLS). |
 
 تقرأ `from_env()` ما يلي:
@@ -232,9 +233,30 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `DNA_TEST_MODE` | القيم `true` أو `1` أو `on` أو `yes` تختار OTE. تُستخدم عند عدم ضبط `DNA_ENV`. |
 | `DNA_BASE_URL` | تجاوز اختياري للعنوان الأساسي. |
 | `DNA_READ_ONLY` | القيمة `true` تفعّل وضع القراءة فقط. |
+| `DNA_APP`, `DNA_APP_VERSION` | التطبيق الذي يستخدم الحزمة وإصداره، ويُرسَلان في `X-App` و`X-Version`. |
 
 النوع `Client` هو `Clone + Send + Sync`، ونسخه (clone) رخيص (فهو يحتفظ بـ `Arc`). أنشئ عميلًا واحدًا لكل مجموعة بيانات اعتماد
 وشاركه طوال عمر التطبيق: فتنظيم وتيرة الطلبات يجري لكل عميل على حدة.
+
+### تعريف تطبيقك
+
+يحمل كل طلب الترويستين `X-App` و`X-Version` اللتين تُعلِمان فريق API بالتكامل الذي أرسل الطلب. قيمتاهما الافتراضيتان
+هما `rust` وإصدار الحزمة. إذا كنت تبني وحدة للوحة تحكم أو منتجًا آخر على الحزمة، فاضبط قيمك الخاصة:
+
+</div>
+
+```rust
+let client = Client::builder()
+    .credentials(reseller_id, api_key)
+    .app("WiseCP5", "V2.0.20-beta") // يُرسَل بالشكل X-App: wisecp5، X-Version: 2.0.20
+    .build()?;
+```
+
+<div dir="rtl">
+
+يُحوَّل الاسم إلى أحرف صغيرة ولا يُبقى منه إلا `a-z` و`0-9` و`.` و`_` و`-`؛ ولا يُبقى من الإصدار إلا الأرقام والنقاط.
+الاسم الفارغ يعود إلى `rust`، والإصدار الفارغ يعود إلى إصدار الحزمة. تقرأ `from_env()` القيم نفسها من `DNA_APP`
+و`DNA_APP_VERSION`. ولا تتغير ترويسة `User-Agent`.
 
 ## الاستخدام
 

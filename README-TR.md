@@ -191,6 +191,7 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `pace_requests(...)` | `true` | İstekleri, geçidin hız sınırlarının altında kalacak şekilde aralıklar. |
 | `read_only(...)` | `false` | Okuma olmayan her isteği, gönderilmeden önce engeller. |
 | `user_agent(...)` | `DomainNameAPI-Rust/<version>` | `User-Agent` başlığı. |
+| `app(name, version)` | `rust`, SDK sürümü | `X-App` ve `X-Version` başlıkları: SDK'yı kullanan uygulama (aşağıya bakın). |
 | `http_client(...)` | SDK'nın kendi istemcisi | Kendi `reqwest::Client` nesneniz (proxy, TLS ayarları). |
 
 `from_env()` şunları okur:
@@ -202,9 +203,27 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `DNA_TEST_MODE` | `true`, `1`, `on` veya `yes` OTE'yi seçer. `DNA_ENV` ayarlı değilse kullanılır. |
 | `DNA_BASE_URL` | İsteğe bağlı temel adres geçersiz kılma. |
 | `DNA_READ_ONLY` | `true`, salt-okunur modu açar. |
+| `DNA_APP`, `DNA_APP_VERSION` | SDK'yı kullanan uygulama ve sürümü; `X-App` ve `X-Version` olarak gönderilir. |
 
 `Client`, `Clone + Send + Sync`'tir ve klonlanması ucuzdur (bir `Arc` tutar). Her kimlik bilgisi kümesi için bir tane
 oluşturun ve uygulamanın ömrü boyunca paylaşın: hız ayarlama istemci başına yapılır.
+
+### Uygulamanızı tanıtma
+
+Her istek, API ekibine isteği hangi entegrasyonun gönderdiğini bildiren `X-App` ve `X-Version` başlıklarını taşır.
+Varsayılan değerler `rust` ve SDK sürümüdür. SDK üzerine bir panel modülü ya da başka bir ürün geliştiriyorsanız kendi
+değerlerinizi verin:
+
+```rust
+let client = Client::builder()
+    .credentials(reseller_id, api_key)
+    .app("WiseCP5", "V2.0.20-beta") // X-App: wisecp5, X-Version: 2.0.20 olarak gönderilir
+    .build()?;
+```
+
+Ad küçük harfe çevrilir ve yalnızca `a-z`, `0-9`, `.`, `_` ve `-` karakterleri kalır; sürümde yalnızca rakamlar ve
+noktalar kalır. Boş bir ad `rust` değerine, boş bir sürüm SDK sürümüne döner. `from_env()` aynı değerleri `DNA_APP` ve
+`DNA_APP_VERSION` değişkenlerinden okur. `User-Agent` başlığı değişmez.
 
 ## Kullanım
 

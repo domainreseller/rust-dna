@@ -32,6 +32,79 @@ async fn sends_credentials_and_tracing_headers() {
 }
 
 #[tokio::test]
+async fn sends_app_headers_by_default() {
+    let api = FakeApi::start().await;
+    api.client().account().get().await.unwrap();
+    let request = api.last();
+    assert_eq!(request.header("x-app"), Some("rust"));
+    assert_eq!(request.header("x-version"), Some(domainnameapi::VERSION));
+    assert!(request.header("user-agent").unwrap().starts_with("DomainNameAPI-Rust/2."));
+}
+
+#[tokio::test]
+async fn sends_the_application_set_on_the_builder() {
+    let api = FakeApi::start().await;
+    let client = api.builder().app("WiseCP5", "V2.0.20-beta").build().unwrap();
+    assert_eq!((client.app(), client.app_version()), ("wisecp5", "2.0.20"));
+    client.account().get().await.unwrap();
+    let request = api.last();
+    assert_eq!(request.header("x-app"), Some("wisecp5"));
+    assert_eq!(request.header("x-version"), Some("2.0.20"));
+    assert!(request.header("user-agent").unwrap().starts_with("DomainNameAPI-Rust/2."), "User-Agent is unchanged");
+
+    let client = api.builder().app("  ", "").build().unwrap();
+    client.account().get().await.unwrap();
+    let request = api.last();
+    assert_eq!(request.header("x-app"), Some("rust"));
+    assert_eq!(request.header("x-version"), Some(domainnameapi::VERSION));
+
+    let client = api.builder().app("my panel!", "beta").build().unwrap();
+    client.account().get().await.unwrap();
+    let request = api.last();
+    assert_eq!(request.header("x-app"), Some("mypanel"));
+    assert_eq!(request.header("x-version"), Some(domainnameapi::VERSION));
+}
+
+#[tokio::test]
+async fn app_headers_are_sent_on_every_attempt() {
+    let api = FakeApi::start().await;
+    api.reply(Reply::text(429, "").header("Retry-After", "0"));
+    api.reply(Reply::text(503, ""));
+    api.reply_json(200, json!({"domainName": "example.com"}));
+    let client = api.builder().app("WHMCS", "8.13.1").build().unwrap();
+    client.domains().info("example.com").await.unwrap();
+    let requests = api.requests();
+    assert_eq!(requests.len(), 3);
+    for request in requests {
+        assert_eq!(request.header("x-app"), Some("whmcs"));
+        assert_eq!(request.header("x-version"), Some("8.13.1"));
+    }
+}
+
+#[tokio::test]
+async fn app_headers_come_from_the_environment() {
+    // The only test in this binary that reads or changes the process environment.
+    std::env::set_var("DNA_RESELLER_ID", "env-reseller");
+    std::env::set_var("DNA_API_KEY", "env-key");
+    std::env::set_var("DNA_APP", "HostBill");
+    std::env::set_var("DNA_APP_VERSION", "v2024.11.0");
+    let api = FakeApi::start().await;
+    let client = domainnameapi::ClientBuilder::from_env().unwrap().base_url(api.base_url()).build().unwrap();
+    client.account().get().await.unwrap();
+    let request = api.last();
+    assert_eq!(request.header("x-app"), Some("hostbill"));
+    assert_eq!(request.header("x-version"), Some("2024.11.0"));
+
+    std::env::set_var("DNA_APP", "");
+    std::env::remove_var("DNA_APP_VERSION");
+    let client = domainnameapi::ClientBuilder::from_env().unwrap().base_url(api.base_url()).build().unwrap();
+    assert_eq!((client.app(), client.app_version()), ("rust", domainnameapi::VERSION));
+    for name in ["DNA_RESELLER_ID", "DNA_API_KEY", "DNA_APP"] {
+        std::env::remove_var(name);
+    }
+}
+
+#[tokio::test]
 async fn sends_json_bodies() {
     let api = FakeApi::start().await;
     api.reply_json(200, json!({"success": true, "status": "Active", "expirationDate": "2027-01-01T00:00:00"}));

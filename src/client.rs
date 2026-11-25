@@ -16,6 +16,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_USER_AGENT: &str =
     concat!("DomainNameAPI-Rust/", env!("CARGO_PKG_VERSION"), " (+https://github.com/domainreseller/rust-dna)");
 
+/// The default `X-App` header: the application that uses the SDK. Override it with [`ClientBuilder::app`].
+pub const DEFAULT_APP: &str = "rust";
+
 /// The API deployment a client talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Environment {
@@ -139,6 +142,8 @@ struct Inner {
     max_retry_delay: Duration,
     read_only: bool,
     user_agent: String,
+    app: String,
+    app_version: String,
     pacer: Option<Pacer>,
 }
 
@@ -168,7 +173,8 @@ impl Client {
     }
 
     /// Creates a client from the environment variables the `dna` CLI reads: `DNA_RESELLER_ID`, `DNA_API_KEY`,
-    /// `DNA_ENV` (`production` or `ote`) or `DNA_TEST_MODE` (`true` for OTE), `DNA_BASE_URL` and `DNA_READ_ONLY`.
+    /// `DNA_ENV` (`production` or `ote`) or `DNA_TEST_MODE` (`true` for OTE), `DNA_BASE_URL`, `DNA_READ_ONLY`,
+    /// `DNA_APP` and `DNA_APP_VERSION`.
     /// Use [`ClientBuilder::from_env`] to change other settings as well.
     pub fn from_env() -> Result<Client, Error> {
         ClientBuilder::from_env()?.build()
@@ -192,6 +198,18 @@ impl Client {
     /// Returns the `User-Agent` header the client sends.
     pub fn user_agent(&self) -> &str {
         &self.inner.user_agent
+    }
+
+    /// Returns the `X-App` header the client sends: the application that uses the SDK, [`DEFAULT_APP`] unless set with
+    /// [`ClientBuilder::app`].
+    pub fn app(&self) -> &str {
+        &self.inner.app
+    }
+
+    /// Returns the `X-Version` header the client sends: the version of the application that uses the SDK, the SDK's
+    /// own [`VERSION`] unless set with [`ClientBuilder::app`].
+    pub fn app_version(&self) -> &str {
+        &self.inner.app_version
     }
 
     /// Your account: balances, profile and the transaction ledger. CLI: `dna account`.
@@ -454,7 +472,9 @@ impl Client {
             .header("User-Agent", &self.inner.user_agent)
             .header("X-API-KEY", &self.inner.api_key)
             .header("__reseller", &self.inner.reseller_id)
-            .header("X-Correlation-ID", correlation_id);
+            .header("X-Correlation-ID", correlation_id)
+            .header("X-App", &self.inner.app)
+            .header("X-Version", &self.inner.app_version);
         if let Some(body) = &prepared.body {
             builder = builder.header("Content-Type", "application/json; charset=utf-8").body(body.clone());
         }
@@ -832,6 +852,8 @@ pub struct ClientBuilder {
     pace_requests: bool,
     read_only: bool,
     user_agent: Option<String>,
+    app: Option<String>,
+    app_version: Option<String>,
     http: Option<reqwest::Client>,
 }
 
@@ -848,6 +870,8 @@ impl Default for ClientBuilder {
             pace_requests: true,
             read_only: false,
             user_agent: None,
+            app: None,
+            app_version: None,
             http: None,
         }
     }
@@ -863,6 +887,7 @@ impl ClientBuilder {
     /// | `DNA_TEST_MODE` | `true`, `1`, `on` or `yes` selects OTE. Used when `DNA_ENV` is not set. |
     /// | `DNA_BASE_URL` | An optional base address override. |
     /// | `DNA_READ_ONLY` | `true`, `1`, `on` or `yes` turns on read-only mode. |
+    /// | `DNA_APP`, `DNA_APP_VERSION` | The application that uses the SDK and its version, sent as `X-App` and `X-Version` (see [`app`](ClientBuilder::app)). |
     ///
     /// Fails when `DNA_ENV` or `DNA_BASE_URL` cannot be read. Missing credentials are reported by
     /// [`build`](ClientBuilder::build).
@@ -887,6 +912,8 @@ impl ClientBuilder {
             builder.base_url = Some(base_url);
         }
         builder.read_only = matches!(get("DNA_READ_ONLY").to_ascii_lowercase().as_str(), "true" | "1" | "on" | "yes");
+        builder.app = Some(get("DNA_APP"));
+        builder.app_version = Some(get("DNA_APP_VERSION"));
         Ok(builder)
     }
 
@@ -955,6 +982,27 @@ impl ClientBuilder {
         self
     }
 
+    /// Names the application that uses the SDK, sent with every request as the `X-App` and `X-Version` headers so the
+    /// API team can tell integrations apart. Defaults to [`DEFAULT_APP`] (`rust`) and the SDK's [`VERSION`].
+    ///
+    /// The name is lower-cased and keeps only `a`-`z`, `0`-`9`, `.`, `_` and `-`; the version keeps only digits and
+    /// dots, without leading or trailing dots. `("WiseCP5", "V2.0.20-beta")` is sent as `wisecp5` and `2.0.20`. A name
+    /// that is empty after this falls back to `rust`, an empty version to the SDK's version.
+    ///
+    /// ```
+    /// use domainnameapi::Client;
+    ///
+    /// let client = Client::builder().credentials("reseller-id", "api-key").app("WiseCP5", "V2.0.20-beta").build()?;
+    /// assert_eq!(client.app(), "wisecp5");
+    /// assert_eq!(client.app_version(), "2.0.20");
+    /// # Ok::<(), domainnameapi::Error>(())
+    /// ```
+    pub fn app(mut self, name: impl Into<String>, version: impl Into<String>) -> Self {
+        self.app = Some(name.into());
+        self.app_version = Some(version.into());
+        self
+    }
+
     /// Uses your own `reqwest::Client`, for example with a proxy or custom TLS settings. The SDK's own client follows
     /// no redirects; a client that does is still handled. The time limit of each attempt is set per request, so the
     /// client's own timeout does not matter.
@@ -1001,6 +1049,12 @@ impl ClientBuilder {
             .map(|ua| ua.trim().to_string())
             .filter(|ua| !ua.is_empty())
             .unwrap_or_else(|| DEFAULT_USER_AGENT.to_string());
+        let app = Some(normalize_app(self.app.as_deref().unwrap_or_default()))
+            .filter(|app| !app.is_empty())
+            .unwrap_or_else(|| DEFAULT_APP.to_string());
+        let app_version = Some(normalize_version(self.app_version.as_deref().unwrap_or_default()))
+            .filter(|version| !version.is_empty())
+            .unwrap_or_else(|| normalize_version(VERSION));
         Ok(Client {
             inner: Arc::new(Inner {
                 http,
@@ -1013,10 +1067,27 @@ impl ClientBuilder {
                 max_retry_delay: self.max_retry_delay,
                 read_only: self.read_only,
                 user_agent,
+                app,
+                app_version,
                 pacer: self.pace_requests.then(Pacer::new),
             }),
         })
     }
+}
+
+/// The `X-App` form of an application name: lower case, only `a`-`z`, `0`-`9`, `.`, `_` and `-`.
+fn normalize_app(name: &str) -> String {
+    name.trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+        .collect()
+}
+
+/// The `X-Version` form of a version: digits and dots only, without leading or trailing dots.
+fn normalize_version(version: &str) -> String {
+    let digits: String = version.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+    digits.trim_matches('.').to_string()
 }
 
 fn check_base_url(url: &str) -> Result<(), Error> {
@@ -1080,6 +1151,50 @@ mod tests {
         assert_eq!(e.code(), codes::INVALID_CONFIGURATION);
         let e = ClientBuilder::from_vars(vars(&[("DNA_BASE_URL", "not a url")])).unwrap_err();
         assert_eq!(e.kind(), ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn app_names_and_versions_are_normalized() {
+        assert_eq!(normalize_app("WiseCP5"), "wisecp5");
+        assert_eq!(normalize_app("  My Panel_v2.x-beta! "), "mypanel_v2.x-beta");
+        assert_eq!(normalize_app("Çözüm"), "zm");
+        assert_eq!(normalize_app(""), "");
+        assert_eq!(normalize_version("V2.0.20-beta"), "2.0.20");
+        assert_eq!(normalize_version("..1.2.."), "1.2");
+        assert_eq!(normalize_version("v.3"), "3");
+        assert_eq!(normalize_version("beta"), "");
+        assert_eq!(normalize_version(VERSION), VERSION);
+    }
+
+    #[test]
+    fn app_defaults_and_fallbacks() {
+        let client = Client::new("id", "key").unwrap();
+        assert_eq!(client.app(), DEFAULT_APP);
+        assert_eq!(client.app_version(), VERSION);
+
+        let client = Client::builder().credentials("id", "key").app("!!!", "beta").build().unwrap();
+        assert_eq!(client.app(), "rust");
+        assert_eq!(client.app_version(), VERSION);
+
+        let client =
+            ClientBuilder::from_vars(vars(&[("DNA_RESELLER_ID", "id"), ("DNA_API_KEY", "key"), ("DNA_APP", "WHMCS")]))
+                .unwrap()
+                .build()
+                .unwrap();
+        assert_eq!(client.app(), "whmcs");
+        assert_eq!(client.app_version(), VERSION);
+
+        let client = ClientBuilder::from_vars(vars(&[
+            ("DNA_RESELLER_ID", "id"),
+            ("DNA_API_KEY", "key"),
+            ("DNA_APP", " WiseCP5 "),
+            ("DNA_APP_VERSION", "V2.0.20-beta"),
+        ]))
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(client.app(), "wisecp5");
+        assert_eq!(client.app_version(), "2.0.20");
     }
 
     #[test]

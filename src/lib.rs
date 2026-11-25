@@ -59,7 +59,7 @@ pub mod orders;
 pub mod products;
 pub mod ssl;
 
-pub use client::{Client, ClientBuilder, Environment, Quota, Response, DEFAULT_USER_AGENT, VERSION};
+pub use client::{Client, ClientBuilder, Environment, Quota, Response, DEFAULT_APP, DEFAULT_USER_AGENT, VERSION};
 pub use error::{codes, Error, ErrorKind};
 pub use request::{
     Empty, Endpoint, FieldError, JsonBody, Method, OperationSafety, Page, PagedRequest, Paging, Query, Request,

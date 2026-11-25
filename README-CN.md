@@ -190,6 +190,7 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `pace_requests(...)` | `true` | 控制请求间隔，使其保持在网关的速率限制之内。 |
 | `read_only(...)` | `false` | 在发送之前阻止所有非读取请求。 |
 | `user_agent(...)` | `DomainNameAPI-Rust/<version>` | `User-Agent` 请求头。 |
+| `app(name, version)` | `rust`、SDK 版本 | `X-App` 和 `X-Version` 请求头：使用 SDK 的应用（见下文）。 |
 | `http_client(...)` | SDK 自带的客户端 | 你自己的 `reqwest::Client`（代理、TLS 设置）。 |
 
 `from_env()` 会读取：
@@ -201,9 +202,25 @@ let client = ClientBuilder::from_env()?.http_client(my_reqwest_client).build()?;
 | `DNA_TEST_MODE` | `true`、`1`、`on` 或 `yes` 表示选择 OTE。未设置 `DNA_ENV` 时使用。 |
 | `DNA_BASE_URL` | 可选，覆盖基础地址。 |
 | `DNA_READ_ONLY` | `true` 表示开启只读模式。 |
+| `DNA_APP`, `DNA_APP_VERSION` | 使用 SDK 的应用及其版本，作为 `X-App` 和 `X-Version` 发送。 |
 
 `Client` 实现了 `Clone + Send + Sync`，克隆开销很小（它内部持有一个 `Arc`）。每组凭据创建一个客户端，并在应用的整个
 生命周期内共享：请求间隔控制是按客户端进行的。
+
+### 标识你的应用
+
+每个请求都带有 `X-App` 和 `X-Version` 请求头，用来告诉 API 团队是哪个集成发出的请求。默认值是 `rust` 和 SDK 版本。
+如果你基于 SDK 开发面板模块或其他产品，请设置你自己的值：
+
+```rust
+let client = Client::builder()
+    .credentials(reseller_id, api_key)
+    .app("WiseCP5", "V2.0.20-beta") // 发送为 X-App: wisecp5、X-Version: 2.0.20
+    .build()?;
+```
+
+名称会转为小写，只保留 `a-z`、`0-9`、`.`、`_` 和 `-`；版本只保留数字和点。名称为空时回退为 `rust`，版本为空时回退为
+SDK 版本。`from_env()` 从 `DNA_APP` 和 `DNA_APP_VERSION` 读取相同的值。`User-Agent` 请求头不受影响。
 
 ## 用法
 
