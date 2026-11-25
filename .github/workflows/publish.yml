@@ -1,0 +1,84 @@
+# Publishes the crate to crates.io when a GitHub release is published.
+#
+# crates.io trusted publishing (OIDC) can only be set up for a crate that
+# already exists, so the very first version needs a token:
+#   1. Sign in to https://crates.io with GitHub, verify the e-mail address and
+#      create an API token with the publish-new and publish-update scopes.
+#   2. Add it as the CARGO_REGISTRY_TOKEN repository secret, or run
+#      `cargo publish` once by hand with it.
+# After the first publish, on crates.io: domainnameapi -> Settings ->
+# Trusted Publishing -> GitHub, owner "domainreseller", repository "rust-dna",
+# workflow "publish.yml", and set the repository variable
+# CRATES_TRUSTED_PUBLISHING to true. The token secret can then be deleted.
+#
+# Until either the token or that variable exists the job only prints a notice
+# and succeeds, so a release never shows a red publish run before crates.io
+# is set up.
+
+name: Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      TRUSTED: ${{ vars.CRATES_TRUSTED_PUBLISHING }}
+    steps:
+      - name: Check the publishing setup
+        id: creds
+        run: |
+          if [ -n "$CARGO_REGISTRY_TOKEN" ] || [ "$TRUSTED" = "true" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::crates.io is not set up yet (CARGO_REGISTRY_TOKEN secret or CRATES_TRUSTED_PUBLISHING variable), skipping the publish."
+          fi
+
+      - uses: actions/checkout@v5
+        if: steps.creds.outputs.ready == 'true'
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.creds.outputs.ready == 'true'
+
+      - name: Read the version
+        if: steps.creds.outputs.ready == 'true'
+        id: version
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "${{ github.event_name }}" = "release" ] && [ "$tag" != "$v" ]; then
+            echo "::error::Release tag $GITHUB_REF_NAME does not match the Cargo.toml version $v"
+            exit 1
+          fi
+
+      - name: Skip when this version is already on crates.io
+        if: steps.creds.outputs.ready == 'true'
+        id: check
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'domainreseller/rust-dna publish workflow' \
+            "https://crates.io/api/v1/crates/domainnameapi/${{ steps.version.outputs.version }}")
+          if [ "$code" = "200" ]; then
+            echo "domainnameapi ${{ steps.version.outputs.version }} is already on crates.io, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to crates.io with trusted publishing
+        if: steps.creds.outputs.ready == 'true' && steps.check.outputs.skip != 'true' && env.CARGO_REGISTRY_TOKEN == ''
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish
+        if: steps.creds.outputs.ready == 'true' && steps.check.outputs.skip != 'true'
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ env.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
