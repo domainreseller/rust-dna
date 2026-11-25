@@ -74,7 +74,7 @@ futures-util = "0.3"   # 用于读取 list_all 返回的流
 在该 crate 发布到 crates.io 之前，请从发布标签获取：
 
 ```toml
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.0.0" }
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.1.0" }
 ```
 
 **要求：** Rust 1.83 或更高版本，以及一个 Tokio 运行时。依赖为 `reqwest`（使用 rustls，不依赖 OpenSSL）、

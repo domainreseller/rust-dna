@@ -91,7 +91,7 @@ futures-util = "0.3"   # لقراءة تدفقات list_all
 </div>
 
 ```toml
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.0.0" }
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.1.0" }
 ```
 
 <div dir="rtl">

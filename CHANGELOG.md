@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-11-26
 
 ### Added
 
@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `a-z0-9._-`, the version only digits and dots (`WiseCP5`, `V2.0.20-beta` → `wisecp5`, `2.0.20`); empty values fall
   back to the defaults. `Client::app()`, `Client::app_version()` and `DEFAULT_APP` expose them. `User-Agent` is
   unchanged.
+
+### Build
+
+- Releases are published to crates.io by a workflow that runs when a GitHub release is published, once a
+  crates.io token or trusted publishing is set up for this repository.
 
 ## [2.0.0] - 2026-11-23
 
@@ -109,7 +114,8 @@ A new SDK, modelled on the [`dna` CLI](https://github.com/domainreseller/cli) an
 - Conformance test replaying all 134 php-dna fixtures, plus unit tests for the HTTP layer, error mapping, telemetry and utilities.
 - README in English with translations in Turkish, German, French, Italian, Dutch, Azerbaijani, Arabic and Simplified Chinese.
 
-[Unreleased]: https://github.com/domainreseller/rust-dna/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/domainreseller/rust-dna/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/domainreseller/rust-dna/releases/tag/v2.1.0
 [2.0.0]: https://github.com/domainreseller/rust-dna/releases/tag/v2.0.0
 [1.0.1]: https://github.com/domainreseller/rust-dna/releases/tag/v1.0.1
 [1.0.0]: https://github.com/domainreseller/rust-dna/releases/tag/v1.0.0

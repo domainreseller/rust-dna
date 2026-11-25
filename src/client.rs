@@ -9,7 +9,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-/// The SDK version, for example `"2.0.0"`.
+/// The SDK version, for example `"2.1.0"`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The default `User-Agent` header.
@@ -975,7 +975,7 @@ impl ClientBuilder {
     }
 
     /// Sets the `User-Agent` header. Defaults to [`DEFAULT_USER_AGENT`]. Put your product in it, for example
-    /// `"my-panel/1.4 DomainNameAPI-Rust/2.0.0"`, to help support find your requests. The API sits behind Cloudflare,
+    /// `"my-panel/1.4 DomainNameAPI-Rust/2.1.0"`, to help support find your requests. The API sits behind Cloudflare,
     /// which rejects empty or generic agents.
     pub fn user_agent(mut self, user_agent: impl Into<String>) -> Self {
         self.user_agent = Some(user_agent.into());

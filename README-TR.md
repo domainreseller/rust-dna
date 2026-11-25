@@ -75,7 +75,7 @@ futures-util = "0.3"   # list_all akışlarını okumak için
 Crate crates.io'da yayınlanana kadar onu sürüm etiketinden alın:
 
 ```toml
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.0.0" }
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.1.0" }
 ```
 
 **Gereksinimler:** Rust 1.83 veya üstü ve bir Tokio çalışma zamanı (runtime). Bağımlılıklar şunlardır: `reqwest` (rustls ile,

@@ -75,7 +75,7 @@ futures-util = "0.3"   # for reading the list_all streams
 Until the crate is published on crates.io, take it from the release tag:
 
 ```toml
-domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.0.0" }
+domainnameapi = { git = "https://github.com/domainreseller/rust-dna", tag = "v2.1.0" }
 ```
 
 **Requirements:** Rust 1.83 or later and a Tokio runtime. The dependencies are `reqwest` (with rustls, no OpenSSL),
